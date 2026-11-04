@@ -47,7 +47,7 @@ Balas HANYA JSON valid: {"reply":"<narasi>","suggestions":["<opsi A>","<opsi B>"
       headers: {
         "Content-Type": "application/json",
         "Authorization": "Bearer " + apiKey,
-        "HTTP-Referer": "https://zennai.vercel.app/",
+        "HTTP-Referer": "https://khusus-jomblo.vercel.app/",
         "X-Title": "zennAI",
       },
       body: JSON.stringify(payload),

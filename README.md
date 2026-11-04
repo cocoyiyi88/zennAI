@@ -2,7 +2,7 @@
 
 Platform cerita AI interaktif visual — clone BagelChat dengan nama **zennAI**.
 
-**Live URL**: **https://zennai-eta.vercel.app**
+**Live URL**: **https://khusus-jomblo.vercel.app** (alias lama https://zennai-eta.vercel.app)
 (Mirror GitHub Pages: https://cocoyiyi88.github.io/zennAI/)
 
 ## Arsitektur
