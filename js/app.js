@@ -113,6 +113,9 @@ function showAuthOverlay() {
       <input id="auth_pass" type="password" placeholder="Kata sandi" autocomplete="current-password">
       <button class="btn block" id="auth_btn">Masuk</button>
       <button class="authtoggle" id="auth_toggle">Belum punya akun? Daftar</button>
+      <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+        <button class="authtoggle" id="auth_skip" style="color:var(--muted)">Lanjut tanpa login (mode lokal)</button>
+      </div>
       <div class="authnote" id="auth_note"></div>
     </div>`;
   document.body.appendChild(el);
@@ -122,7 +125,12 @@ function showAuthOverlay() {
   const pass = el.querySelector("#auth_pass");
   const note = el.querySelector("#auth_note");
   const toggle = el.querySelector("#auth_toggle");
+  const skip = el.querySelector("#auth_skip");
   const btn = el.querySelector("#auth_btn");
+
+  if (skip) skip.addEventListener("click", () => {
+    el.remove();
+  });
 
   toggle.addEventListener("click", () => {
     mode = mode === "in" ? "up" : "in";
