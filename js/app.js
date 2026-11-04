@@ -142,11 +142,26 @@ function showAuthOverlay() {
   btn.addEventListener("click", async () => {
     note.textContent = "Tunggu...";
     try {
-      if (mode === "in") await SBsignIn(email.value.trim(), pass.value);
-      else await SBsignUp(email.value.trim(), pass.value);
-      await hydrateFromCloud();
-      el.remove();
-      render();
+      if (mode === "in") {
+        await SBsignIn(email.value.trim(), pass.value);
+        await hydrateFromCloud();
+        el.remove();
+        render();
+      } else {
+        const sess = await SBsignUp(email.value.trim(), pass.value);
+        if (sess) {
+          await hydrateFromCloud();
+          el.remove();
+          render();
+        } else {
+          note.style.color = "var(--ok)";
+          note.textContent = "✓ Pendaftaran berhasil! Silakan cek email kamu untuk konfirmasi, lalu Masuk.";
+          note.style.display = "block";
+          mode = "in";
+          btn.textContent = "Masuk";
+          toggle.textContent = "Belum punya akun? Daftar";
+        }
+      }
     } catch (e) {
       note.textContent = "Gagal: " + (e.message || e.error_description || "coba lagi");
       note.style.display = "block";
