@@ -52,7 +52,7 @@ Tanpa API key, app tetap jalan **mode demo** (penutur lokal) supaya semua fitur 
 ## API key AI (gratis)
 
 1. Buka [openrouter.ai](https://openrouter.ai/keys) → daftar gratis → **Create Key** (contoh `sk-or-v1-...`).
-2. Di app: **Pengaturan → API Key** → tempel key. Model default sudah model gratis: `meta-llama/llama-3.3-70b-instruct:free` (tinggal `Simpan`).
+2. Di app: **Pengaturan → API Key** → tempel key. Model default sudah model gratis: `recursive/flint-v1.0:free` (tinggal `Simpan`).
 3. Atau model berbayar lain: ubah field **Model** (cth. `openai/gpt-4o-mini`).
 
 **DeepSeek** (berbayar tipis): isi Model `deepseek/deepseek-chat` dan Endpoint `https://api.deepseek.com/v1`.

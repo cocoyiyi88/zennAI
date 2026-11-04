@@ -276,7 +276,7 @@ function viewSettings() {
         </div>
         <div class="field">
           <label>Model</label>
-          <input id="cfg_model" placeholder="cth. meta-llama/llama-3.3-70b-instruct:free" value="${esc(cfg.model)}">
+          <input id="cfg_model" placeholder="cth. recursive/flint-v1.0:free" value="${esc(cfg.model)}">
           <div class="hint">Untuk DeepSeek: isi <b>deepseek/deepseek-chat</b> dan ganti Endpoint ke https://api.deepseek.com/v1 (DeepSeek berbayar tipis).</div>
         </div>
         <div class="field">

@@ -1,5 +1,5 @@
 // zennAI config & settings
-const DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+const DEFAULT_MODEL = "recursive/flint-v1.0:free";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 function loadConfig() {
