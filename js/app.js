@@ -27,7 +27,13 @@ function loadCustomStories() {
   try { return JSON.parse(localStorage.getItem("zenn_custom")) || []; }
   catch (e) { return []; }
 }
-function saveCustomStories(list) { localStorage.setItem("zenn_custom", JSON.stringify(list)); }
+function saveCustomStories(list) {
+  localStorage.setItem("zenn_custom", JSON.stringify(list));
+  // push ke cloud kalau authed
+  if (SB.ready && SB.session) {
+    list.forEach(st => DB.upsertStory(st));
+  }
+}
 
 // session cerita
 function getSessions() { return loadLibrary(); }
@@ -47,11 +53,97 @@ function saveSession(sess) {
   const lib = getSessions();
   lib[sess.id] = sess;
   saveLibrary(lib);
+  // push ke cloud kalau authed
+  if (SB.ready && SB.session) DB.saveSession(sess.id, sess.messages);
 }
 function deleteSession(storyId) {
   const lib = getSessions();
   delete lib[storyId];
   saveLibrary(lib);
+  if (SB.ready && SB.session) DB.deleteSession(storyId);
+}
+
+// ===== Supabase auth + hydrate =====
+async function hydrateFromCloud() {
+  if (!SB.ready) return;
+  const s = await SBsession();
+  if (!s) return;
+  // profile -> cfg mirror
+  const prof = await DB.getProfile();
+  if (prof) {
+    const c = loadConfig();
+    if (prof.safe_mode !== null && prof.safe_mode !== undefined) c.safe = prof.safe_mode;
+    if (prof.age_ok !== null && prof.age_ok !== undefined) c.ageOk = prof.age_ok;
+    if (prof.model) c.model = prof.model;
+    saveConfig(c);
+  }
+  // custom stories -> storage mirror
+  const cloudStories = await DB.listStories();
+  if (cloudStories) {
+    // simpan custom milik user (dengan is_mature) + seed lokal tetap ada
+    const custom = cloudStories.map(r => ({
+      id: r.id, title: r.title, tagline: r.tagline, genre: r.genre,
+      coverPrompt: r.coverPrompt, premise: r.premise, characters: r.characters,
+      opening: r.opening, mature: !!r.mature,
+    }));
+    saveCustomStories(custom);
+  }
+  // sessions -> library mirror (biar lanjut cross-device)
+  const lib = getSessions();
+  const ids = new Set(allStories().map(x => x.id));
+  for (const id of ids) {
+    const sess = await DB.getSession(id);
+    if (sess && sess.messages && sess.messages.length) {
+      lib[id] = { id, createdAt: lib[id] ? lib[id].createdAt : Date.now(), messages: sess.messages };
+    }
+  }
+  saveLibrary(lib);
+}
+
+function showAuthOverlay() {
+  if (document.querySelector(".authmodal")) return;
+  const el = document.createElement("div");
+  el.className = "authmodal";
+  el.innerHTML = `
+    <div class="authmodal-box">
+      <div class="agegate-logo"><span class="logo">zenn</span>AI</div>
+      <h2>Masuk ke akun</h2>
+      <p>Data ceritamu tersimpan di cloud & sinkron lintas device.</p>
+      <input id="auth_email" type="email" placeholder="Email" autocomplete="email">
+      <input id="auth_pass" type="password" placeholder="Kata sandi" autocomplete="current-password">
+      <button class="btn block" id="auth_btn">Masuk</button>
+      <button class="authtoggle" id="auth_toggle">Belum punya akun? Daftar</button>
+      <div class="authnote" id="auth_note"></div>
+    </div>`;
+  document.body.appendChild(el);
+
+  let mode = "in";
+  const email = el.querySelector("#auth_email");
+  const pass = el.querySelector("#auth_pass");
+  const note = el.querySelector("#auth_note");
+  const toggle = el.querySelector("#auth_toggle");
+  const btn = el.querySelector("#auth_btn");
+
+  toggle.addEventListener("click", () => {
+    mode = mode === "in" ? "up" : "in";
+    btn.textContent = mode === "in" ? "Masuk" : "Daftar";
+    toggle.textContent = mode === "in" ? "Belum punya akun? Daftar" : "Sudah punya akun? Masuk";
+    note.textContent = "";
+  });
+
+  btn.addEventListener("click", async () => {
+    note.textContent = "Tunggu...";
+    try {
+      if (mode === "in") await SBsignIn(email.value.trim(), pass.value);
+      else await SBsignUp(email.value.trim(), pass.value);
+      await hydrateFromCloud();
+      el.remove();
+      render();
+    } catch (e) {
+      note.textContent = "Gagal: " + (e.message || e.error_description || "coba lagi");
+      note.style.display = "block";
+    }
+  });
 }
 
 // ===== render root =====
@@ -123,13 +215,30 @@ function bind(root) {
   const savebtn = $("#savecfg");
   if (savebtn) savebtn.addEventListener("click", () => {
     const cfg = getConfig();
-    cfg.apiKey = $("#cfg_key").value.trim();
+    const keyEl = $("#cfg_key");
+    if (keyEl) cfg.apiKey = keyEl.value.trim();
     cfg.model = $("#cfg_model").value.trim();
-    cfg.baseUrl = $("#cfg_url").value.trim();
+    const urlEl = $("#cfg_url");
+    if (urlEl) cfg.baseUrl = urlEl.value.trim();
     saveConfig(cfg);
+    // juga simpan ke cloud
+    if (SB.ready && SB.session) DB.saveProfile(cfg);
     const ok = $("#cfgok");
     ok.style.display = "block";
     setTimeout(() => { ok.style.display = "none"; }, 2200);
+  });
+
+  // logout
+  const logoutBtn = $("#logoutBtn");
+  if (logoutBtn) logoutBtn.addEventListener("click", async () => {
+    await SBsignOut();
+    render();
+  });
+
+  // login dari settings
+  const loginBtn = $("#loginBtn");
+  if (loginBtn) loginBtn.addEventListener("click", () => {
+    showAuthOverlay();
   });
 
   // safe mode toggle
@@ -251,23 +360,31 @@ function viewLibrary() {
 
 function viewSettings() {
   const cfg = getConfig();
-  return `
-    <h2 class="sectiontitle">Pengaturan AI</h2>
-    <div class="settings">
-      <div class="cardbox">
-        <h3>Safe Mode <span class="badge">${cfg.safe ? "AKTIF" : "NONAKTIF"}</span></h3>
-        <div class="desc">Saat ON, konten dewasa (21+) disembunyikan dan AI menjaga cerita tetap aman untuk semua umur. Saat OFF, cerita 21+ tampil dan AI diizinkan menyajikan tema dewasa.</div>
-        <label class="switchrow">
-          <input type="checkbox" id="cfg_safe" ${cfg.safe ? "checked" : ""}>
-          <span>Mode Aman — filter konten 21+</span>
-        </label>
-        <div class="field" style="margin-top:14px">
-          <label>Konfirmasi usia</label>
-          <div class="desc" style="margin-bottom:6px">${cfg.ageOk ? "✓ Sudah terkonfirmasi 21+." : "Belum dikonfirmasi — gate usia akan muncul saat pembukaan."}</div>
-          <button class="btn" id="age_confirm">Saya sudah berusia 21+</button>
+  const hasAuth = SB.ready && SB.session;
+  const authBar = hasAuth
+    ? `<div class="authbar">
+        <span class="email">👤 ${esc(SB.session.user.email)}</span>
+        <button class="logout" id="logoutBtn">Keluar</button>
+       </div>`
+    : (SB.ready
+        ? `<div class="authbar">
+            <span class="email" style="color:var(--muted)">Belum masuk — data hanya di browser ini.</span>
+            <button class="btn" id="loginBtn" style="font-size:13px">Masuk / Daftar</button>
+           </div>`
+        : "");
+  const apiSection = hasAuth
+    ? `<div class="cardbox">
+        <h3>AI Backend <span class="badge">server-side ✓</span></h3>
+        <div class="desc">Key OpenRouter tersimpan aman di server. Tidak perlu input API key manual.</div>
+        <div class="field">
+          <label>Model (opsional)</label>
+          <input id="cfg_model" placeholder="cth. recursive/flint-v1.0:free" value="${esc(cfg.model)}">
+          <div class="hint">Biarkan default atau ganti ke model gratis lain dari OpenRouter.</div>
         </div>
-      </div>
-      <div class="cardbox">
+        <button class="btn block" id="savecfg">Simpan</button>
+        <div class="note" id="cfgok" style="display:none;margin-top:12px">✓ Tersimpan.</div>
+       </div>`
+    : `<div class="cardbox">
         <h3>API Key <span class="badge">wajib untuk AI beneran</span></h3>
         <div class="desc">Disimpan hanya di browser kamu (localStorage). Tidak dikirim ke server mana pun.</div>
         <div class="field">
@@ -285,7 +402,25 @@ function viewSettings() {
         </div>
         <button class="btn block" id="savecfg">Simpan</button>
         <div class="note" id="cfgok" style="display:none;margin-top:12px">✓ Tersimpan.</div>
+       </div>`;
+  return `
+    <h2 class="sectiontitle">Pengaturan AI</h2>
+    <div class="settings">
+      ${authBar}
+      <div class="cardbox">
+        <h3>Safe Mode <span class="badge">${cfg.safe ? "AKTIF" : "NONAKTIF"}</span></h3>
+        <div class="desc">Saat ON, konten dewasa (21+) disembunyikan dan AI menjaga cerita tetap aman untuk semua umur. Saat OFF, cerita 21+ tampil dan AI diizinkan menyajikan tema dewasa.</div>
+        <label class="switchrow">
+          <input type="checkbox" id="cfg_safe" ${cfg.safe ? "checked" : ""}>
+          <span>Mode Aman — filter konten 21+</span>
+        </label>
+        <div class="field" style="margin-top:14px">
+          <label>Konfirmasi usia</label>
+          <div class="desc" style="margin-bottom:6px">${cfg.ageOk ? "✓ Sudah terkonfirmasi 21+." : "Belum dikonfirmasi — gate usia akan muncul saat pembukaan."}</div>
+          <button class="btn" id="age_confirm">Saya sudah berusia 21+</button>
+        </div>
       </div>
+      ${apiSection}
     </div>`;
 }
 
@@ -392,6 +527,52 @@ function rerenderChat() {
 // ===== AI =====
 async function askAI(story, sess) {
   const cfg = getConfig();
+
+  // path Supabase + Vercel proxy: AI call lewat server (key aman)
+  if (SB.ready) {
+    const s = await SBsession();
+    if (s) {
+      const recent = sess.messages.slice(-12).map(m =>
+        (m.role === "user" ? "Pemain: " : story.title + ": ") + m.text
+      ).join("\n");
+
+      // sistem prompt dengan konteks cerita
+      const sysContent = `Kamu penutur AI untuk cerita interaktif visual berjudul "${story.title}".
+Genre: ${story.genre}. Premis: ${story.premise}. Karakter: ${story.characters}.
+Lanjutkan narasi imersif orang kedua, 2-4 kalimat. Berikan 3 opsi aksi (A/B/C). Sertakan satu prompt gambar singkat (Inggris).
+Kebijakan konten: ${cfg.safe ? "SAFE MODE — jaga cerita tetap aman untuk semua umur." : "MODE 21+ — konten dewasa diperbolehkan, tetap naratif."}
+Balas HANYA JSON valid: {"reply":"<narasi>","suggestions":["<opsi A>","<opsi B>","<opsi C>"],"image":"<prompt gambar singkat>"}`;
+
+      const payload = {
+        messages: [
+          { role: "system", content: sysContent },
+          { role: "user", content: recent }
+        ],
+        safe: cfg.safe,
+        model: cfg.model || DEFAULT_MODEL,
+      };
+      try {
+        const res = await fetch("/api/ai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error("HTTP " + res.status + " " + (j.error || ""));
+        const content = j.content || "";
+        const parsed = parseAI(content);
+        return {
+          reply: (parsed && parsed.reply) || content.slice(0, 600),
+          sugg: (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length)
+            ? parsed.suggestions.slice(0, 3).map(s => String(s).trim())
+            : defaultSug(parsed),
+          img: (parsed && parsed.image) ? imageUrl(parsed.image) : null,
+        };
+      } catch (e) { throw e; }
+    }
+  }
+
+  // fallback: panggil langsung dari browser (key di localStorage)
   const recent = sess.messages.slice(-10).map(m =>
     (m.role === "user" ? "Pemain: " : story.title + ": ") + m.text
   ).join("\n");
@@ -456,6 +637,13 @@ Balas HANYA JSON valid dengan format:
   return { reply, sugg, img };
 }
 
+function parseAI(content) {
+  try { return JSON.parse(content); } catch (e) {}
+  const m = content.match(/\{[\s\S]*\}/);
+  if (m) { try { return JSON.parse(m[0]); } catch (e2) {} }
+  return null;
+}
+
 function defaultSug(parsed) {
   const r = (parsed && parsed.reply) || "";
   return [
@@ -494,6 +682,18 @@ document.addEventListener("click", e => {
   if (el) { state.view = el.dataset.view; render(); }
 });
 render();
+
+// supabase: init, kalau siap + belum login -> minta login; kalau sudah -> hydrate
+SBinit();
+if (SB.ready) {
+  (async () => {
+    try {
+      const s = await SBsession();
+      if (s) { await hydrateFromCloud(); render(); }
+      else showAuthOverlay();
+    } catch (e) {}
+  })();
+}
 
 // fallback gambar: kalau Pollinations gagal/lambat, ganti gradient
 const FALLBACK_SVG = "data:image/svg+xml;utf8," + encodeURIComponent(
