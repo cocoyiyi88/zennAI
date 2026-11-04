@@ -269,6 +269,28 @@ body {
 .authnote { color: var(--err); font-size: 13px; margin-top: 12px; display: none; }
 .authnote:not(:empty) { display: block; }
 
+/* gender preference modal */
+.gendermodal {
+  position: fixed; inset: 0; z-index: 120;
+  background: rgba(8,7,14,.92); backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.gendermodal-box {
+  background: var(--card); border: 1px solid var(--line); border-radius: 20px;
+  max-width: 400px; width: 100%; padding: 32px; text-align: center;
+  box-shadow: 0 30px 80px rgba(0,0,0,.6);
+}
+.gendermodal-box h2 { margin: 0 0 8px; color: var(--accent2); }
+.gendermodal-box p { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0 0 20px; }
+.genderchoice {
+  display: block; width: 100%; box-sizing: border-box;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 12px; padding: 14px; font-size: 15px; margin-bottom: 10px;
+  cursor: pointer; transition: all .15s;
+}
+.genderchoice:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+.genderchoice:last-child { margin-bottom: 0; }
+
 .authbar {
   display: flex; align-items: center; justify-content: space-between;
   background: var(--card); border: 1px solid var(--line); border-radius: 12px;

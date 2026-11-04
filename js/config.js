@@ -14,7 +14,9 @@ function getConfig() {
     model: c.model || DEFAULT_MODEL,
     baseUrl: c.baseUrl || "",
     safe: c.safe !== false,        // safe mode default ON
-    ageOk: c.ageOk === true         // konfirmasi usia 21+
+    ageOk: c.ageOk === true,        // konfirmasi usia 21+
+    gender: c.gender || "all",     // 'm' | 'f' | 'all'
+    genderChosen: c.genderChosen === true
   };
 }
 

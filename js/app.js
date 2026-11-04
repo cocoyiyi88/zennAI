@@ -130,6 +130,7 @@ function showAuthOverlay() {
 
   if (skip) skip.addEventListener("click", () => {
     el.remove();
+    maybeAskGender();
   });
 
   toggle.addEventListener("click", () => {
@@ -147,12 +148,14 @@ function showAuthOverlay() {
         await hydrateFromCloud();
         el.remove();
         render();
+        maybeAskGender();
       } else {
         const sess = await SBsignUp(email.value.trim(), pass.value);
         if (sess) {
           await hydrateFromCloud();
           el.remove();
           render();
+          maybeAskGender();
         } else {
           note.style.color = "var(--ok)";
           note.textContent = "✓ Pendaftaran berhasil! Silakan cek email kamu untuk konfirmasi, lalu Masuk.";
@@ -167,6 +170,35 @@ function showAuthOverlay() {
       note.style.display = "block";
     }
   });
+}
+
+// ===== pilih preferensi gender =====
+function showGenderOverlay() {
+  if (document.querySelector(".gendermodal")) return;
+  const el = document.createElement("div");
+  el.className = "gendermodal";
+  el.innerHTML = `
+    <div class="gendermodal-box">
+      <div class="agegate-logo"><span class="logo">zenn</span>AI</div>
+      <h2>Pilih Preferensi Cerita</h2>
+      <p>Biar otomatis tampil cerita yang paling cocok buat kamu. Bisa diubah kapan aja di Pengaturan.</p>
+      <button class="genderchoice" data-gender="m">💪 Cowok</button>
+      <button class="genderchoice" data-gender="f">🌸 Cewek</button>
+      <button class="genderchoice" data-gender="all">🌓 Semua</button>
+    </div>`;
+  document.body.appendChild(el);
+  el.querySelectorAll(".genderchoice").forEach(b => b.addEventListener("click", () => {
+    const cfg = getConfig();
+    cfg.gender = b.dataset.gender;
+    cfg.genderChosen = true;
+    saveConfig(cfg);
+    el.remove();
+    render();
+  }));
+}
+function maybeAskGender() {
+  const cfg = getConfig();
+  if (!cfg.genderChosen) showGenderOverlay();
 }
 
 // ===== render root =====
@@ -214,7 +246,8 @@ function bind(root) {
       characters: chars || "Kamu adalah tokoh utamanya.",
       opening: premise
         ? premise
-        : "Cerita dimulai. Kamu belum tahu apa yang menantimu — tapi sesuatu di udara terasa berbeda."
+        : "Cerita dimulai. Kamu belum tahu apa yang menantimu — tapi sesuatu di udara terasa berbeda.",
+      custom: true
     };
     const custom = loadCustomStories();
     custom.unshift(st);
@@ -264,6 +297,12 @@ function bind(root) {
     showAuthOverlay();
   });
 
+  // ubah preferensi gender dari settings
+  const genderBtn = $("#gender_btn");
+  if (genderBtn) genderBtn.addEventListener("click", () => {
+    showGenderOverlay();
+  });
+
   // safe mode toggle
   const safeToggle = $("#cfg_safe");
   if (safeToggle) safeToggle.addEventListener("change", () => {
@@ -288,6 +327,9 @@ function viewHome() {
   const cfg = getConfig();
   let stories = allStories();
   if (cfg.safe) stories = stories.filter(s => !isMature(s)); // safe mode: sembunyikan 21+
+  // filter gender: 'm' tampilkan m+all, 'f' tampilkan f+all; cerita custom selalu tampil
+  if (cfg.gender === "m") stories = stories.filter(s => s.custom || s.gender === "m" || s.gender === "all");
+  else if (cfg.gender === "f") stories = stories.filter(s => s.custom || s.gender === "f" || s.gender === "all");
   const filtered = state.genre === "ALL" ? stories : stories.filter(s => s.genre === state.genre);
   const chips = ["ALL"].concat(GENRES).map(g =>
     `<button class="chip ${state.genre === g ? "active" : ""}" data-genre="${g}">${g}</button>`
@@ -401,7 +443,7 @@ function viewSettings() {
         <div class="desc">Key OpenRouter tersimpan aman di server. Tidak perlu input API key manual.</div>
         <div class="field">
           <label>Model (opsional)</label>
-          <input id="cfg_model" placeholder="cth. recursive/flint-v1.0:free" value="${esc(cfg.model)}">
+          <input id="cfg_model" list="model_list" placeholder="cth. recursive/flint-v1.0:free" value="${esc(cfg.model)}">
           <div class="hint">Biarkan default atau ganti ke model gratis lain dari OpenRouter.</div>
         </div>
         <button class="btn block" id="savecfg">Simpan</button>
@@ -416,7 +458,7 @@ function viewSettings() {
         </div>
         <div class="field">
           <label>Model</label>
-          <input id="cfg_model" placeholder="cth. recursive/flint-v1.0:free" value="${esc(cfg.model)}">
+          <input id="cfg_model" list="model_list" placeholder="cth. recursive/flint-v1.0:free" value="${esc(cfg.model)}">
           <div class="hint">Untuk DeepSeek: isi <b>deepseek/deepseek-chat</b> dan ganti Endpoint ke https://api.deepseek.com/v1 (DeepSeek berbayar tipis).</div>
         </div>
         <div class="field">
@@ -443,8 +485,26 @@ function viewSettings() {
           <button class="btn" id="age_confirm">Saya sudah berusia 21+</button>
         </div>
       </div>
+      <div class="cardbox">
+        <h3>Preferensi Cerita <span class="badge">${cfg.gender === "m" ? "Cowok" : cfg.gender === "f" ? "Cewek" : "Semua"}</span></h3>
+        <div class="desc">Home otomatis menampilkan cerita yang paling cocok dengan preferensimu. Cerita buatanmu selalu muncul apa pun preferensinya.</div>
+        <button class="btn" id="gender_btn">Ubah preferensi</button>
+      </div>
       ${apiSection}
-    </div>`;
+    </div>
+    <datalist id="model_list">
+      <option value="recursive/flint-v1.0:free">
+      <option value="google/gemini-4-argon">
+      <option value="anthropic/claude-sonnet-5.5">
+      <option value="anthropic/claude-opus-5.5">
+      <option value="openai/gpt-6-luna-pro">
+      <option value="deepseek/deepseek-v4.1-flash-1017">
+      <option value="mistralai/mistral-large-4-0">
+      <option value="qwen/qwen3.8-max-prime">
+      <option value="liquid/lfm-2.5-24b-a2b">
+      <option value="nvidia/nemotron-3.5-super-vl:free">
+      <option value="xingchen-agi/xing4.0-29b-a4b:free">
+    </datalist>`;
 }
 
 // ===== layar main =====
@@ -712,10 +772,12 @@ if (SB.ready) {
   (async () => {
     try {
       const s = await SBsession();
-      if (s) { await hydrateFromCloud(); render(); }
+      if (s) { await hydrateFromCloud(); render(); maybeAskGender(); }
       else showAuthOverlay();
     } catch (e) {}
   })();
+} else {
+  maybeAskGender();
 }
 
 // fallback gambar: kalau Pollinations gagal/lambat, ganti gradient
