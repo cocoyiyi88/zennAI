@@ -1,8 +1,20 @@
-# zennAI — Tonton Ceritamu Terungkap
+# zennAI
 
-Clone ringan dari *BagelChat*: platform cerita AI interaktif. Pilih skenario, ngobrol dengan AI yang menjawab dengan teks **dan gambar**, pilih arah cerita dari 3 opsi jawaban (A/B/C), atau tulis sendiri.
+Platform cerita AI interaktif visual — clone BagelChat dengan nama **zennAI**.
 
-100% gratis, tanpa backend, tanpa database server — semua data tersimpan di browser kamu (localStorage).
+**Live URL**: **https://zennai-eta.vercel.app**
+(Mirror GitHub Pages: https://cocoyiyi88.github.io/zennAI/)
+
+## Arsitektur
+
+- **Frontend**: Vanilla JS (SPA) — responsive dark-mode, mobile-friendly
+- **Hosting**: Vercel (Production) + GitHub Pages (Mirror)
+- **Database & Auth**: Supabase (PostgreSQL, Row Level Security, Auth Email)
+- **AI Backend**: Vercel Serverless Function `/api/ai` (proxy ke OpenRouter)
+  - Key `OPENROUTER_API_KEY` disimpan aman sebagai **Secret** di Vercel (tidak pernah terekspos ke browser)
+  - Model default: `recursive/flint-v1.0:free` (100% gratis dari OpenRouter)
+- **Image Generation**: Pollinations.ai (gratis, tanpa API key)
+- **Fallback**: Tetap bisa digunakan secara offline/lokal tanpa login (mode localStorage)
 
 ## Fitur
 
