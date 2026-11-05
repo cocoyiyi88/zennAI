@@ -27,17 +27,28 @@ export default async function handler(req, res) {
     ? "SAFE MODE — jaga cerita tetap aman untuk semua umur; HINDARI tema dewasa, kekerasan eksplisit, dan konten seksual."
     : "MODE 21+ — konten dewasa diperbolehkan sesuai arah pemain, tetap naratif dan tidak eksplisit berlebihan.";
 
-  const system = {
-    role: "system",
-    content: `Kamu penutur AI untuk cerita interaktif visual. Lanjutkan narasi imersif orang kedua, 2-4 kalimat. Berikan 3 opsi aksi (A/B/C). Sertakan satu prompt gambar singkat (Inggris).
+  // Cek apakah pesan pertama adalah system prompt khusus
+  let finalMessages = [];
+  if (messages[0]?.role === "system") {
+    const customSys = messages[0].content + "\n\nKebijakan konten: " + policy;
+    finalMessages = [
+      { role: "system", content: customSys },
+      ...messages.slice(1).slice(-12)
+    ];
+  } else {
+    const defaultSys = `Kamu penutur AI RPG interaktif ala BagelChat. Lanjutkan narasi imersif orang kedua ("kamu"), 2-4 kalimat dengan dialog karakter jelas. Berikan 3 opsi aksi (A/B/C). Sertakan satu prompt gambar singkat (Inggris).
 Kebijakan konten: ${policy}
-Balas HANYA JSON valid: {"reply":"<narasi>","suggestions":["<opsi A>","<opsi B>","<opsi C>"],"image":"<prompt gambar singkat>"}`,
-  };
+Balas HANYA JSON valid: {"reply":"<dialog & narasi>","suggestions":["<opsi A>","<opsi B>","<opsi C>"],"image":"<prompt gambar singkat>"}`;
+    finalMessages = [
+      { role: "system", content: defaultSys },
+      ...messages.slice(-12)
+    ];
+  }
 
   const payload = {
     model: useModel,
-    messages: [system, ...messages.slice(-12)],
-    temperature: 0.9,
+    messages: finalMessages,
+    temperature: 0.85,
     response_format: { type: "json_object" },
   };
 

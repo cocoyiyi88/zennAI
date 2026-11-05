@@ -16,7 +16,13 @@ function getConfig() {
     safe: c.safe !== false,        // safe mode default ON
     ageOk: c.ageOk === true,        // konfirmasi usia 21+
     gender: c.gender || "all",     // 'm' | 'f' | 'all'
-    genderChosen: c.genderChosen === true
+    genderChosen: c.genderChosen === true,
+    personaName: c.personaName || "Raja",
+    personaGender: c.personaGender || c.gender || "m",
+    personaBio: c.personaBio || "Cerdik, tenang, berwibawa",
+    fontSize: c.fontSize || "normal", // 'small' | 'normal' | 'large'
+    showStats: c.showStats !== false,
+    activeTab: c.activeTab || "featured"
   };
 }
 
