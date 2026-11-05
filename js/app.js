@@ -753,7 +753,8 @@ KEMBALIKAN HANYA JSON VALID:
   }
 
   // Fallback Direct OpenRouter jika ada API Key di config
-  if (cfg.apiKey) {
+  try {
+    if (cfg.apiKey) {
     const directRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -782,6 +783,7 @@ KEMBALIKAN HANYA JSON VALID:
           affection_delta: parsed.affection_delta || 1
         };
       }
+    }
     }
   } catch (e) {
     // Lewati jika lokal atau endpoint vercel tidak ada
