@@ -16,16 +16,59 @@ const state = {
   zoomImageUrl: null,
 };
 
-// URL helper Pollinations
+// URL helper & High-Res Aesthetic Fallbacks
+function generateSvgAvatar(name) {
+  const initials = String(name || "K").slice(0, 2).toUpperCase();
+  const hue = ((name ? name.charCodeAt(0) : 75) * 47) % 360;
+  return "data:image/svg+xml;utf8," + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+      <defs>
+        <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="hsl(${hue}, 75%, 55%)"/>
+          <stop offset="100%" stop-color="hsl(${(hue+65)%360}, 85%, 38%)"/>
+        </linearGradient>
+      </defs>
+      <circle cx="50" cy="50" r="48" fill="url(#g)" stroke="rgba(255,255,255,0.2)" stroke-width="2"/>
+      <text x="50" y="58" font-family="system-ui, sans-serif" font-size="34" font-weight="800" fill="#ffffff" text-anchor="middle" dominant-baseline="middle">${initials}</text>
+    </svg>`
+  );
+}
+
+function generateSceneFallback(label) {
+  const cleanLabel = String(label || "Adegan Cerita").slice(0, 45);
+  return "data:image/svg+xml;utf8," + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="380" viewBox="0 0 640 380">
+      <defs>
+        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#21153b"/>
+          <stop offset="50%" stop-color="#141022"/>
+          <stop offset="100%" stop-color="#0a0911"/>
+        </linearGradient>
+        <radialGradient id="glow" cx="80%" cy="20%" r="50%">
+          <stop offset="0%" stop-color="rgba(255,107,214,0.3)"/>
+          <stop offset="100%" stop-color="transparent"/>
+        </radialGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#bg)"/>
+      <rect width="100%" height="100%" fill="url(#glow)"/>
+      <circle cx="530" cy="90" r="60" fill="rgba(160,107,255,0.18)"/>
+      <path d="M0,300 Q180,240 360,290 T640,280 L640,380 L0,380 Z" fill="rgba(160,107,255,0.15)"/>
+      <text x="320" y="175" font-family="system-ui, sans-serif" font-size="18" font-weight="700" fill="#f0edfa" text-anchor="middle">✨ ${cleanLabel}</text>
+      <text x="320" y="205" font-family="system-ui, sans-serif" font-size="13" fill="#9b95b8" text-anchor="middle">Visual Novel Scene · zennAI</text>
+    </svg>`
+  );
+}
+
 function imageUrl(prompt, w = 640, h = 760, seed) {
-  const p = encodeURIComponent(String(prompt || "anime scene").trim());
+  if (!prompt) return generateSceneFallback("Adegan Cerita");
+  const p = encodeURIComponent(String(prompt).trim());
   const s = seed !== undefined ? seed : Math.floor(Math.random() * 100000);
   return `https://image.pollinations.ai/prompt/${p}?width=${w}&height=${h}&seed=${s}&nologo=true`;
 }
 
-function avatarUrl(prompt, seed = 42) {
-  const p = encodeURIComponent(String(prompt || "anime character portrait face").trim());
-  return `https://image.pollinations.ai/prompt/${p}?width=150&height=150&seed=${seed}&nologo=true`;
+function avatarUrl(name, prompt, seed = 42) {
+  // Gunakan generator SVG artistik agar avatar karakter tidak pernah kosong/rusak
+  return generateSvgAvatar(name);
 }
 
 // Data cerita
@@ -480,7 +523,7 @@ function viewPlay() {
 
     return `
       <div class="chat-row ai-row">
-        <img class="chat-avatar" src="${avatarUrl(avPrompt, idx + 10)}" alt="${esc(charName)}" loading="lazy">
+        <img class="chat-avatar" src="${avatarUrl(charName, avPrompt, idx + 10)}" alt="${esc(charName)}" loading="lazy">
         <div class="chat-bubble-wrap">
           <div class="chat-sender-name">${esc(charName)}</div>
           <div class="chat-bubble">${esc(m.text)}</div>
@@ -903,7 +946,7 @@ function renderModals() {
       const pct = Math.min(100, Math.max(0, heart));
       return `
         <div class="char-card-row">
-          <img class="char-card-avatar" src="${avatarUrl(c.avatarPrompt, 88)}" alt="${esc(c.name)}">
+          <img class="char-card-avatar" src="${avatarUrl(c.name, c.avatarPrompt, 88)}" alt="${esc(c.name)}">
           <div class="char-card-info">
             <div class="char-card-name">${esc(c.name)}</div>
             <div class="char-card-role">${esc(c.role || "Rekan")}</div>
