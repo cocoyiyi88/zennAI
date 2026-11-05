@@ -24,7 +24,14 @@ Platform cerita AI interaktif visual — clone BagelChat dengan nama **zennAI**.
 - 🛠 **Buat cerita sendiri** — isi judul + premis + karakter, AI bangun dunianya
 - 🔞 **Gate usia 21+ eksplisit** — muncul saat pertama buka, wajib konfirmasi
 - 🛡 **Safe Mode** — default AKTIF: sembunyikan cerita 21+ dan suruh AI jaga konten aman untuk semua umur. Matikan di Pengaturan untuk tampilkan cerita dewasa
-- 📚 **Perpustakaan** — lanjutkan cerita yang sudah dimulai
+- 📚 **Perpustakaan** — lanjutkan cerita yang sudah dimulai, hapus riwayat, progres baca
+- 👤 **Profil Pengguna** — statistik baca, cerita favorit, info akun
+- ❤️ **Favorit & Bookmark** — simpan cerita favorit untuk akses cepat
+- 🔍 **Pencarian Cerita** — cari berdasarkan judul atau tema secara real-time
+- 📱 **Navigasi Bawah (Mobile)** — bar navigasi nyaman untuk HP (Beranda, Tulis, Cerita, Profil)
+- 🔔 **Notifikasi Toast** — feedback aksi yang elegan tanpa reload
+- 🔗 **Bagikan Cerita** — share link cerita ke teman via Web Share API atau salin tautan
+- 💯 **100% Gratis & Tanpa Token** — akses cerita dan AI tanpa batasan kuota koin/token virtual
 
 ## Struktur
 

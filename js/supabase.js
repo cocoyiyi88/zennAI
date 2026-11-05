@@ -112,4 +112,25 @@ const DB = {
     if (!s) return;
     await SB.client.from("sessions").delete().eq("owner", s.user.id).eq("story_id", storyId);
   },
+  // --- favorites ---
+  async getFavorites() {
+    if (!SB.ready) return [];
+    const s = await SBsession();
+    if (!s) return [];
+    const { data } = await SB.client.from("favorites")
+      .select("story_id").eq("owner", s.user.id);
+    return (data || []).map(r => r.story_id);
+  },
+  async addFavorite(storyId) {
+    if (!SB.ready) return;
+    const s = await SBsession();
+    if (!s) return;
+    await SB.client.from("favorites").upsert({ owner: s.user.id, story_id: storyId });
+  },
+  async removeFavorite(storyId) {
+    if (!SB.ready) return;
+    const s = await SBsession();
+    if (!s) return;
+    await SB.client.from("favorites").delete().eq("owner", s.user.id).eq("story_id", storyId);
+  },
 };

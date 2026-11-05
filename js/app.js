@@ -395,6 +395,7 @@ function viewSettings() {
         <button class="btn block" id="btn_save_model">Simpan Model</button>
       </div>
     </div>
+
     <datalist id="model_list">
       <option value="recursive/flint-v1.0:free">
       <option value="google/gemini-4-argon">
@@ -782,6 +783,8 @@ KEMBALIKAN HANYA JSON VALID:
         };
       }
     }
+  } catch (e) {
+    // Lewati jika lokal atau endpoint vercel tidak ada
   }
 
   // Fallback cerdas offline simulator jika offline atau API limit
@@ -1065,13 +1068,37 @@ document.addEventListener("error", e => {
     <div class="agegate-box">
       <div class="agegate-logo"><span class="logo">zenn</span>AI</div>
       <h2>Konten Dewasa 21+</h2>
-      <p>zennAI menyediakan cerita dengan tema dewasa (21+). Dengan melanjutkan, kamu menyatakan sudah berusia 21 tahun atau lebih dan menyetujui konten tersebut.</p>
-      <button class="cta" id="ageOkBtn">Saya sudah berusia 21+</button>
-      <div class="agegate-note">Safe Mode default AKTIF — konten 21+ disembunyikan kecuali dinonaktifkan di Pengaturan.</div>
+      <p>zennAI menyediakan cerita interaktif yang beberapa di antaranya memuat tema dewasa (21+). Dengan melanjutkan, kamu menyatakan telah berusia 21 tahun atau lebih.</p>
+      <button class="cta" id="ageOkBtn">Saya Berusia 21 Tahun atau Lebih</button>
+      <div class="agegate-note">Safe Mode default AKTIF — konten 21+ disaring secara otomatis kecuali dinonaktifkan di Pengaturan.</div>
     </div>`;
   document.body.appendChild(overlay);
   overlay.querySelector("#ageOkBtn").addEventListener("click", () => {
-    const c = getConfig(); c.ageOk = true; saveConfig(c);
+    const c = getConfig();
+    c.ageOk = true;
+    saveConfig(c);
     overlay.remove();
+    showToast("Selamat datang di zennAI!", "success");
   });
 })();
+
+// ===== BOOTSTRAP =====
+window.addEventListener("DOMContentLoaded", async () => {
+  // Setup navigasi atas & bawah
+  document.addEventListener("click", e => {
+    const btn = e.target.closest("[data-view]");
+    if (btn) {
+      state.view = btn.dataset.view;
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  });
+
+  // Init Supabase
+  SBinit();
+  if (SB.ready) {
+    await hydrateFromCloud();
+  }
+
+  render();
+});

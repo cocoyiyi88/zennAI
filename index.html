@@ -14,14 +14,23 @@
     <button class="navbtn active" data-view="home">Beranda</button>
     <button class="navbtn" data-view="create">Buat Cerita</button>
     <button class="navbtn" data-view="library">Perpustakaan</button>
+    <button class="navbtn" data-view="profile">Profil</button>
     <button class="navbtn" data-view="settings">Pengaturan</button>
   </nav>
 </header>
 
 <main id="view"></main>
 
+<nav id="bottomnav" class="bottomnav">
+  <button data-view="home"><span class="bnav-icon">🏠</span>Beranda</button>
+  <button data-view="create"><span class="bnav-icon">✍️</span>Tulis</button>
+  <button data-view="library"><span class="bnav-icon">💬</span>Cerita</button>
+  <button data-view="profile"><span class="bnav-icon">👤</span>Profil</button>
+</nav>
+
 <footer class="foot">© 2026 zennAI — gaskan cerita, tonton terungkap.</footer>
 
+<div id="toasts" class="toast-container"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="js/supabase-config.js"></script>
 <script src="js/config.js"></script>
