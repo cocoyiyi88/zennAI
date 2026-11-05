@@ -6,61 +6,126 @@ const $$ = (sel, el) => Array.from((el || document).querySelectorAll(sel));
 let state = {
   view: "home",
   genre: "ALL",
+  searchQuery: "",
   activeStory: null,
   sending: false,
-  custom: null // data cerita custom sementara
+  custom: null
 };
 
 function esc(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
+  return String(s || "").replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;",
     '"': "&quot;", "'": "&#39;"
   })[c]);
 }
 
-// cerita = seed + custom (custom disimpan di localStorage)
+// ===== Toast Notification System =====
+function showToast(message, type = "info", duration = 3000) {
+  let container = $("#toasts");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toasts";
+    container.className = "toast-container";
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = "0";
+    toast.style.transition = "opacity 0.3s ease, transform 0.3s ease";
+    toast.style.transform = "translateY(-10px)";
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
+// ===== Favorites System =====
+function getFavorites() {
+  try { return JSON.parse(localStorage.getItem("zenn_favs")) || []; }
+  catch (e) { return []; }
+}
+
+function isFavorite(storyId) {
+  return getFavorites().includes(storyId);
+}
+
+function toggleFavorite(storyId) {
+  const favs = getFavorites();
+  const idx = favs.indexOf(storyId);
+  let added = false;
+  if (idx > -1) {
+    favs.splice(idx, 1);
+    if (SB.ready && SB.session && DB.removeFavorite) DB.removeFavorite(storyId);
+  } else {
+    favs.push(storyId);
+    added = true;
+    if (SB.ready && SB.session && DB.addFavorite) DB.addFavorite(storyId);
+  }
+  localStorage.setItem("zenn_favs", JSON.stringify(favs));
+  showToast(added ? "❤️ Ditambahkan ke favorit" : "🤍 Dihapus dari favorit", "info");
+  render();
+}
+
+// ===== Cerita = seed + custom =====
 function allStories() {
   const custom = loadCustomStories();
   return custom.concat(SEED_STORIES);
 }
+
 function loadCustomStories() {
   try { return JSON.parse(localStorage.getItem("zenn_custom")) || []; }
   catch (e) { return []; }
 }
+
 function saveCustomStories(list) {
   localStorage.setItem("zenn_custom", JSON.stringify(list));
-  // push ke cloud kalau authed
   if (SB.ready && SB.session) {
     list.forEach(st => DB.upsertStory(st));
   }
 }
 
-// session cerita
+function deleteCustomStory(storyId) {
+  const custom = loadCustomStories().filter(s => s.id !== storyId);
+  saveCustomStories(custom);
+  deleteSession(storyId);
+  showToast("Cerita kustom telah dihapus.", "info");
+  render();
+}
+
+// ===== Session cerita =====
 function getSessions() { return loadLibrary(); }
+
 function getSession(storyId) {
   const lib = getSessions();
   if (!lib[storyId]) {
     const story = allStories().find(s => s.id === storyId);
+    if (!story) return null;
     lib[storyId] = {
-      id: storyId, createdAt: Date.now(),
+      id: storyId,
+      createdAt: Date.now(),
       messages: [{ role: "ai", sit: story.opening, text: story.opening, img: imageUrl(story.coverPrompt, 640, 760, 101) }]
     };
     saveLibrary(lib);
   }
   return lib[storyId];
 }
+
 function saveSession(sess) {
+  if (!sess || !sess.id) return;
   const lib = getSessions();
   lib[sess.id] = sess;
   saveLibrary(lib);
-  // push ke cloud kalau authed
   if (SB.ready && SB.session) DB.saveSession(sess.id, sess.messages);
 }
+
 function deleteSession(storyId) {
   const lib = getSessions();
   delete lib[storyId];
   saveLibrary(lib);
   if (SB.ready && SB.session) DB.deleteSession(storyId);
+  showToast("Riwayat percakapan dihapus.", "info");
+  render();
 }
 
 // ===== Supabase auth + hydrate =====
@@ -68,7 +133,7 @@ async function hydrateFromCloud() {
   if (!SB.ready) return;
   const s = await SBsession();
   if (!s) return;
-  // profile -> cfg mirror
+
   const prof = await DB.getProfile();
   if (prof) {
     const c = loadConfig();
@@ -77,18 +142,24 @@ async function hydrateFromCloud() {
     if (prof.model) c.model = prof.model;
     saveConfig(c);
   }
-  // custom stories -> storage mirror
+
+  if (DB.getFavorites) {
+    const f = await DB.getFavorites();
+    if (Array.isArray(f)) {
+      localStorage.setItem("zenn_favs", JSON.stringify(f));
+    }
+  }
+
   const cloudStories = await DB.listStories();
   if (cloudStories) {
-    // simpan custom milik user (dengan is_mature) + seed lokal tetap ada
     const custom = cloudStories.map(r => ({
       id: r.id, title: r.title, tagline: r.tagline, genre: r.genre,
       coverPrompt: r.coverPrompt, premise: r.premise, characters: r.characters,
-      opening: r.opening, mature: !!r.mature,
+      opening: r.opening, mature: !!r.mature, custom: true
     }));
     saveCustomStories(custom);
   }
-  // sessions -> library mirror (biar lanjut cross-device)
+
   const lib = getSessions();
   const ids = new Set(allStories().map(x => x.id));
   for (const id of ids) {
@@ -147,6 +218,7 @@ function showAuthOverlay() {
         await SBsignIn(email.value.trim(), pass.value);
         await hydrateFromCloud();
         el.remove();
+        showToast("Berhasil masuk!", "success");
         render();
         maybeAskGender();
       } else {
@@ -154,6 +226,7 @@ function showAuthOverlay() {
         if (sess) {
           await hydrateFromCloud();
           el.remove();
+          showToast("Pendaftaran berhasil!", "success");
           render();
           maybeAskGender();
         } else {
@@ -172,7 +245,6 @@ function showAuthOverlay() {
   });
 }
 
-// ===== pilih preferensi gender =====
 function showGenderOverlay() {
   if (document.querySelector(".gendermodal")) return;
   const el = document.createElement("div");
@@ -196,38 +268,131 @@ function showGenderOverlay() {
     render();
   }));
 }
+
 function maybeAskGender() {
   const cfg = getConfig();
   if (!cfg.genderChosen) showGenderOverlay();
 }
 
-// ===== render root =====
+// ===== Share Helper =====
+function shareStory(story) {
+  const url = window.location.origin + window.location.pathname;
+  const text = `Mainkan cerita "${story.title}" di zennAI: ${story.tagline}`;
+  if (navigator.share) {
+    navigator.share({ title: story.title, text: text, url: url }).catch(() => {});
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(`${text}\n${url}`).then(() => {
+      showToast("Tautan cerita berhasil disalin ke papan klip!", "success");
+    }).catch(() => {
+      showToast("Gagal menyalin tautan.", "error");
+    });
+  } else {
+    showToast("Fitur berbagi tidak didukung di perangkat ini.", "info");
+  }
+}
+
+// ===== Render Root =====
 function render() {
   const v = $("#view");
   const navs = $$(".navbtn");
   navs.forEach(n => n.classList.toggle("active", n.dataset.view === state.view));
+
+  const bnavs = $$(".bottomnav button");
+  bnavs.forEach(n => n.classList.toggle("active", n.dataset.view === state.view));
+
   if (state.view === "home") v.innerHTML = viewHome();
   else if (state.view === "create") v.innerHTML = viewCreate();
   else if (state.view === "library") v.innerHTML = viewLibrary();
+  else if (state.view === "profile") v.innerHTML = viewProfile();
   else if (state.view === "settings") v.innerHTML = viewSettings();
   else v.innerHTML = viewPlay();
+
   bind(v);
 }
 
 function bind(root) {
   // chip genre
   $$(".chip", root).forEach(c => c.addEventListener("click", () => {
-    state.genre = c.dataset.genre; render();
+    state.genre = c.dataset.genre;
+    render();
   }));
 
-  // buka cerita
+  // search input
+  const sInp = $("#storySearch", root);
+  if (sInp) {
+    sInp.addEventListener("input", e => {
+      state.searchQuery = e.target.value.toLowerCase().trim();
+      // Update grid without losing input focus
+      const grid = $("#storyGrid");
+      if (grid) {
+        grid.innerHTML = renderStoryCards();
+        bindStoryCards(grid);
+      }
+    });
+  }
+
+  // Favorite buttons
+  $$("[data-fav]", root).forEach(b => b.addEventListener("click", e => {
+    e.stopPropagation();
+    toggleFavorite(b.dataset.fav);
+  }));
+
+  // Share buttons
+  $$("[data-share]", root).forEach(b => b.addEventListener("click", e => {
+    e.stopPropagation();
+    const st = allStories().find(s => s.id === b.dataset.share);
+    if (st) shareStory(st);
+  }));
+
+  // Buka cerita
   $$("[data-open]", root).forEach(c => c.addEventListener("click", () => {
     const story = allStories().find(s => s.id === c.dataset.open);
-    if (story) { state.activeStory = story.id; state.view = "play"; render(); }
+    if (story) {
+      state.activeStory = story.id;
+      state.view = "play";
+      render();
+    }
   }));
 
-  // form buat
-  const cf = $("#customform");
+  // Hapus session dari library
+  $$("[data-del-session]", root).forEach(b => b.addEventListener("click", e => {
+    e.stopPropagation();
+    const id = b.dataset.delSession;
+    if (confirm("Hapus riwayat obrolan cerita ini?")) {
+      deleteSession(id);
+    }
+  }));
+
+  // Hapus custom story
+  $$("[data-del-story]", root).forEach(b => b.addEventListener("click", e => {
+    e.stopPropagation();
+    const id = b.dataset.delStory;
+    if (confirm("Hapus cerita ini secara permanen?")) {
+      deleteCustomStory(id);
+    }
+  }));
+
+  // Kembali dari Play View
+  const backBtn = $("#backToLib", root);
+  if (backBtn) {
+    backBtn.addEventListener("click", () => {
+      state.view = "library";
+      render();
+    });
+  }
+
+  // Form buat cerita
+  const cf = $("#customform", root);
+  const premiseEl = $("#cf_premise", root);
+  const charCountEl = $("#charCount", root);
+  if (premiseEl && charCountEl) {
+    premiseEl.addEventListener("input", () => {
+      const len = premiseEl.value.length;
+      charCountEl.textContent = `${len}/500 karakter`;
+      charCountEl.classList.toggle("over", len > 500);
+    });
+  }
+
   if (cf) cf.addEventListener("submit", e => {
     e.preventDefault();
     const title = $("#cf_title").value.trim();
@@ -238,142 +403,232 @@ function bind(root) {
     if (!title) return;
     const id = "custom-" + Date.now();
     const st = {
-      id, title: title || "Cerita Tanpa Judul",
+      id,
+      title: title || "Cerita Tanpa Judul",
       tagline: tagline || "Sebuah cerita baru.",
       genre: genre || "Misteri",
       coverPrompt: (premise || title) + ", cinematic anime key visual",
       premise: premise || "Kamu memulai cerita baru.",
       characters: chars || "Kamu adalah tokoh utamanya.",
-      opening: premise
-        ? premise
-        : "Cerita dimulai. Kamu belum tahu apa yang menantimu — tapi sesuatu di udara terasa berbeda.",
+      opening: premise ? premise : "Cerita dimulai. Kamu belum tahu apa yang menantimu — tapi sesuatu di udara terasa berbeda.",
       custom: true
     };
     const custom = loadCustomStories();
     custom.unshift(st);
     saveCustomStories(custom);
-    state.activeStory = st.id; state.view = "play"; render();
+    showToast("Cerita berhasil dibuat!", "success");
+    state.activeStory = st.id;
+    state.view = "play";
+    render();
   });
 
-  // composer
-  const inp = $("#chatinput");
-  const sb = $("#sendbtn");
+  // Composer di Play View
+  const inp = $("#chatinput", root);
+  const sb = $("#sendbtn", root);
   if (sb) sb.addEventListener("click", () => {
     if (inp.value.trim() && !state.sending) sendMessage(inp.value.trim());
   });
   if (inp) inp.addEventListener("keydown", e => {
     if (e.key === "Enter" && inp.value.trim() && !state.sending) {
-      e.preventDefault(); sendMessage(inp.value.trim());
+      e.preventDefault();
+      sendMessage(inp.value.trim());
     }
   });
 
-  // settings save
-  const savebtn = $("#savecfg");
+  // Suggestion buttons di Play View
+  $$(".sug", root).forEach(b => b.addEventListener("click", () => {
+    if (!state.sending && b.dataset.sug) {
+      sendMessage(b.dataset.sug);
+    }
+  }));
+
+  // Settings Save
+  const savebtn = $("#savecfg", root);
   if (savebtn) savebtn.addEventListener("click", () => {
     const cfg = getConfig();
     const keyEl = $("#cfg_key");
     if (keyEl) cfg.apiKey = keyEl.value.trim();
-    cfg.model = $("#cfg_model").value.trim();
+    const modelEl = $("#cfg_model");
+    if (modelEl) cfg.model = modelEl.value.trim();
     const urlEl = $("#cfg_url");
     if (urlEl) cfg.baseUrl = urlEl.value.trim();
     saveConfig(cfg);
-    // juga simpan ke cloud
     if (SB.ready && SB.session) DB.saveProfile(cfg);
+    showToast("Pengaturan berhasil disimpan!", "success");
     const ok = $("#cfgok");
-    ok.style.display = "block";
-    setTimeout(() => { ok.style.display = "none"; }, 2200);
+    if (ok) {
+      ok.style.display = "block";
+      setTimeout(() => { ok.style.display = "none"; }, 2200);
+    }
   });
 
-  // logout
-  const logoutBtn = $("#logoutBtn");
+  // Logout
+  const logoutBtn = $("#logoutBtn", root);
   if (logoutBtn) logoutBtn.addEventListener("click", async () => {
     await SBsignOut();
+    showToast("Berhasil keluar akun.", "info");
     render();
   });
 
-  // login dari settings
-  const loginBtn = $("#loginBtn");
+  // Login dari settings/profile
+  const loginBtn = $("#loginBtn", root);
   if (loginBtn) loginBtn.addEventListener("click", () => {
     showAuthOverlay();
   });
 
-  // ubah preferensi gender dari settings
-  const genderBtn = $("#gender_btn");
+  // Gender Modal trigger
+  const genderBtn = $("#gender_btn", root);
   if (genderBtn) genderBtn.addEventListener("click", () => {
     showGenderOverlay();
   });
 
-  // safe mode toggle
-  const safeToggle = $("#cfg_safe");
-  if (safeToggle) safeToggle.addEventListener("change", () => {
+  // Safe Mode Toggle
+  const safeToggle = $("#safe_toggle", root);
+  if (safeToggle) safeToggle.addEventListener("click", () => {
     const cfg = getConfig();
-    cfg.safe = safeToggle.checked;
+    cfg.safe = !cfg.safe;
     saveConfig(cfg);
-    render();
-  });
-
-  // konfirmasi usia
-  const ageBtn = $("#age_confirm");
-  if (ageBtn) ageBtn.addEventListener("click", () => {
-    const cfg = getConfig();
-    cfg.ageOk = true;
-    saveConfig(cfg);
+    if (SB.ready && SB.session) DB.saveProfile(cfg);
+    showToast(cfg.safe ? "Safe Mode AKTIF: Konten 21+ disembunyikan" : "Safe Mode NONAKTIF: Konten 21+ ditampilkan", "info");
     render();
   });
 }
 
-// ===== views =====
+function bindStoryCards(container) {
+  $$("[data-fav]", container).forEach(b => b.addEventListener("click", e => {
+    e.stopPropagation();
+    toggleFavorite(b.dataset.fav);
+  }));
+  $$("[data-open]", container).forEach(c => c.addEventListener("click", () => {
+    const story = allStories().find(s => s.id === c.dataset.open);
+    if (story) {
+      state.activeStory = story.id;
+      state.view = "play";
+      render();
+    }
+  }));
+}
+
+// ===== VIEWS =====
+
+// Helper: render cards list
+function renderStoryCards() {
+  const cfg = getConfig();
+  let list = allStories();
+
+  if (cfg.safe) list = list.filter(s => !isMature(s));
+
+  if (cfg.gender && cfg.gender !== "all") {
+    list = list.filter(s => s.gender === cfg.gender || s.gender === "all" || !s.gender);
+  }
+
+  if (state.genre !== "ALL") {
+    list = list.filter(s => s.genre === state.genre);
+  }
+
+  if (state.searchQuery) {
+    list = list.filter(s =>
+      s.title.toLowerCase().includes(state.searchQuery) ||
+      (s.tagline && s.tagline.toLowerCase().includes(state.searchQuery)) ||
+      (s.premise && s.premise.toLowerCase().includes(state.searchQuery))
+    );
+  }
+
+  if (!list.length) {
+    return `<div class="empty" style="grid-column: 1/-1;">
+      <p>Tidak ada cerita yang cocok dengan filter pencarian.</p>
+    </div>`;
+  }
+
+  return list.map(s => {
+    const matureTag = isMature(s) ? `<span class="mature">21+</span>` : "";
+    const favActive = isFavorite(s.id) ? "❤️" : "🤍";
+    return `
+      <div class="card" data-open="${s.id}">
+        <button class="fav-btn" data-fav="${s.id}" title="Favorit">${favActive}</button>
+        <img class="cover" loading="lazy" src="${imageUrl(s.coverPrompt, 640, 760, 42)}" alt="${esc(s.title)}">
+        <div class="body">
+          <h3>${esc(s.title)}</h3>
+          <div class="tagline">${esc(s.tagline)}</div>
+          <div class="meta">
+            <span class="g">${esc(s.genre)}</span>
+            ${matureTag}
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+}
+
 function viewHome() {
   const cfg = getConfig();
-  let stories = allStories();
-  if (cfg.safe) stories = stories.filter(s => !isMature(s)); // safe mode: sembunyikan 21+
-  // filter gender: 'm' tampilkan m+all, 'f' tampilkan f+all; cerita custom selalu tampil
-  if (cfg.gender === "m") stories = stories.filter(s => s.custom || s.gender === "m" || s.gender === "all");
-  else if (cfg.gender === "f") stories = stories.filter(s => s.custom || s.gender === "f" || s.gender === "all");
-  const filtered = state.genre === "ALL" ? stories : stories.filter(s => s.genre === state.genre);
-  const chips = ["ALL"].concat(GENRES).map(g =>
-    `<button class="chip ${state.genre === g ? "active" : ""}" data-genre="${g}">${g}</button>`
-  ).join("");
+  const safeBanner = cfg.safe ? `
+    <div class="safe-banner">
+      🛡️ <b>Safe Mode Aktif</b> — Konten 21+ disembunyikan. Matikan di Pengaturan jika ingin membuka semua konten.
+    </div>` : "";
 
-  const cards = filtered.map(s => {
-    const n = (getSessions()[s.id] || { messages: [] }).messages.length;
-    const matureBadge = (!cfg.safe && isMature(s))
-      ? `<span class="badge21">21+</span>` : "";
-    return `<div class="card" data-open="${s.id}">
-      <img class="cover" loading="lazy" src="${imageUrl(s.coverPrompt, 640, 760, 7)}" alt="${esc(s.title)}">
-      <div class="body">
-        <h3>${esc(s.title)} ${matureBadge}</h3>
-        <div class="tagline">${esc(s.tagline)}</div>
-        <div class="meta">
-          <span class="g">${esc(s.genre)}</span>
-          <span class="ic">◔ ${n} pesan</span>
-        </div>
-      </div>
-    </div>`;
-  }).join("");
+  // Favorites section
+  const favIds = getFavorites();
+  let favSection = "";
+  if (favIds.length > 0) {
+    const favStories = allStories().filter(s => favIds.includes(s.id) && (!cfg.safe || !isMature(s)));
+    if (favStories.length > 0) {
+      const favCards = favStories.map(s => `
+        <div class="card" data-open="${s.id}">
+          <button class="fav-btn" data-fav="${s.id}" title="Hapus Favorit">❤️</button>
+          <img class="cover" loading="lazy" src="${imageUrl(s.coverPrompt, 640, 760, 42)}" alt="${esc(s.title)}">
+          <div class="body">
+            <h3>${esc(s.title)}</h3>
+            <div class="tagline">${esc(s.tagline)}</div>
+            <div class="meta"><span class="g">${esc(s.genre)}</span></div>
+          </div>
+        </div>`).join("");
+      favSection = `
+        <div class="fav-section">
+          <h3>❤️ Cerita Favoritmu</h3>
+          <div class="grid">${favCards}</div>
+        </div>`;
+    }
+  }
 
   return `
     <section class="hero">
       <h1>Tonton Ceritamu <span class="grad">Terungkap</span></h1>
-      <p>Pilih skenario, ngobrol dengan karakter AI yang menjawab dengan teks dan gambar. Kamu yang tentukan arah ceritanya.</p>
-      <button class="cta" data-view="create">Buat Cerita Baru</button>
-      <button class="cta ghost" data-view="library">Lanjutkan Cerita</button>
+      <p>Jelajahi petualangan interaktif berbasis AI visual. Setiap pilihan mengubah takdir duniamu.</p>
+      <div>
+        <button class="cta" data-open="${SEED_STORIES[0].id}">Mulai Cerita Pilihan</button>
+        <button class="cta ghost" data-view="create">Tulis Sendiri</button>
+      </div>
     </section>
-    <div class="chips">${chips}</div>
-    <div class="grid">${cards || '<div class="empty">Tidak ada cerita di genre ini.</div>'}</div>`;
+
+    ${safeBanner}
+
+    <div class="search-wrap">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="storySearch" class="search-input" placeholder="Cari judul, karakter, atau genre..." value="${esc(state.searchQuery)}">
+    </div>
+
+    <div class="chips">
+      <button class="chip ${state.genre === 'ALL' ? 'active' : ''}" data-genre="ALL">Semua</button>
+      ${GENRES.map(g => `<button class="chip ${state.genre === g ? 'active' : ''}" data-genre="${g}">${g}</button>`).join("")}
+    </div>
+
+    ${favSection}
+
+    <h2 class="sectiontitle" style="margin-top:20px;">Daftar Cerita</h2>
+    <div class="grid" id="storyGrid">${renderStoryCards()}</div>`;
 }
 
 function viewCreate() {
   return `
     <h2 class="sectiontitle">Buat Cerita Baru</h2>
-    <form class="form" id="customform">
+    <form id="customform" class="cardbox">
       <div class="field">
-        <label>Judul</label>
-        <input id="cf_title" placeholder="cth. Drakor Kantor — Rahasia Lantai 7">
+        <label>Judul Cerita</label>
+        <input id="cf_title" placeholder="cth. Petualangan di Kota Terlarang" required>
       </div>
       <div class="field">
-        <label>Tagline (slogan singkat)</label>
-        <input id="cf_tagline" placeholder="cth. Setiap rahasia punya harga.">
+        <label>Tagline / Ringkasan Singkat</label>
+        <input id="cf_tagline" placeholder="cth. Menjelajahi kota mati penuh rahasia masa lalu.">
       </div>
       <div class="field">
         <label>Genre</label>
@@ -382,13 +637,14 @@ function viewCreate() {
         </select>
       </div>
       <div class="field">
-        <label>Premis / latar cerita</label>
-        <textarea id="cf_premise" placeholder="Ceritakan awal ceritamu: siapa kamu, di mana, apa yang terjadi. AI akan membangun dunia dan karakter dari sini."></textarea>
+        <label>Premis / Latar Cerita</label>
+        <textarea id="cf_premise" maxlength="500" placeholder="Ceritakan awal ceritamu: siapa kamu, di mana tempatnya, apa tantangan utamanya. AI akan menyusun visual dan arah karakter dari sini."></textarea>
+        <div id="charCount" class="char-count">0/500 karakter</div>
         <div class="hint">Penjelasan di sini menjadi adegan pembuka dan arah cerita.</div>
       </div>
       <div class="field">
         <label>Karakter (opsional)</label>
-        <input id="cf_chars" placeholder="cth. Rara (HRD licik), Dimas (karyawan baru), Bos Surya (misterius)">
+        <input id="cf_chars" placeholder="cth. Rara (peneliti jenius), Dimas (kapten ekspedisi)">
       </div>
       <button type="submit" class="btn block">Mulai Cerita</button>
     </form>`;
@@ -397,30 +653,103 @@ function viewCreate() {
 function viewLibrary() {
   const lib = getSessions();
   const ids = Object.keys(lib);
+
   if (!ids.length) {
     return `<div class="empty">
       <p>Belum ada cerita yang dimulai.</p>
       <button class="cta" data-view="home">Pilih Cerita</button>
     </div>`;
   }
-  const cards = ids.map(id => {
+
+  const validCards = ids.map(id => {
     const s = allStories().find(x => x.id === id);
     const sess = lib[id];
-    if (!s) return "";
-    const n = sess.messages.length;
-    return `<div class="card" data-open="${id}">
-      <img class="cover" loading="lazy" src="${imageUrl(s.coverPrompt, 640, 760, 7)}" alt="${esc(s.title)}">
-      <div class="body">
-        <h3>${esc(s.title)}</h3>
-        <div class="tagline">${esc(s.tagline)}</div>
-        <div class="meta">
-          <span class="g">${esc(s.genre)}</span>
-          <span class="ic">◔ ${n} pesan</span>
+    if (!s || !sess) return "";
+    const n = sess.messages ? sess.messages.length : 0;
+    const progressPct = Math.min(100, Math.max(10, n * 8));
+    const isCustom = !!s.custom;
+
+    return `
+      <div class="card" data-open="${id}">
+        <button class="del-btn" data-del-session="${id}" title="Hapus riwayat">✕</button>
+        <img class="cover" loading="lazy" src="${imageUrl(s.coverPrompt, 640, 760, 7)}" alt="${esc(s.title)}">
+        <div class="body">
+          <h3>${esc(s.title)}</h3>
+          <div class="tagline">${esc(s.tagline)}</div>
+          <div class="progress-bar">
+            <div class="progress-fill" style="width: ${progressPct}%"></div>
+          </div>
+          <div class="meta" style="margin-top:8px;">
+            <span class="g">${esc(s.genre)}</span>
+            <span class="ic">💬 ${n} pesan</span>
+            ${isCustom ? `<span style="color:var(--accent3);font-size:11px;">[Kustom]</span>` : ""}
+          </div>
         </div>
+      </div>`;
+  }).filter(Boolean).join("");
+
+  return `
+    <h2 class="sectiontitle">Perpustakaan Cerita</h2>
+    <div class="grid">${validCards}</div>`;
+}
+
+function viewProfile() {
+  const hasAuth = SB.ready && SB.session;
+  const email = hasAuth ? SB.session.user.email : "Tamu (Mode Lokal)";
+  const firstLetter = email.charAt(0).toUpperCase();
+
+  const lib = getSessions();
+  const totalStories = Object.keys(lib).length;
+  let totalMsgs = 0;
+  Object.values(lib).forEach(s => {
+    if (s.messages) totalMsgs += s.messages.length;
+  });
+
+  const favCount = getFavorites().length;
+
+  return `
+    <div class="profile-header">
+      <div class="avatar">${firstLetter}</div>
+      <h2 style="margin:0 0 6px;">${esc(email)}</h2>
+      <div style="color:var(--muted);font-size:14px;">${hasAuth ? "Akun Cloud Terverifikasi ✓" : "Penyimpanan Browser Lokal"}</div>
+      
+      ${!hasAuth && SB.ready ? `
+        <button class="cta" id="loginBtn" style="margin-top:16px;padding:8px 20px;font-size:13px;">Masuk / Daftar Akun Cloud</button>
+      ` : ""}
+    </div>
+
+    <div class="profile-stats">
+      <div class="stat-card">
+        <div class="stat-num">📖 ${totalStories}</div>
+        <div class="stat-label">Cerita Dimainkan</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">💬 ${totalMsgs}</div>
+        <div class="stat-label">Pesan Cerita</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">❤️ ${favCount}</div>
+        <div class="stat-label">Favorit</div>
+      </div>
+    </div>
+
+    <div class="cardbox" style="margin-top:24px;">
+      <h3 style="margin-top:0;">Menu Cepat</h3>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <button class="genderchoice" data-view="library" style="text-align:left;display:flex;justify-content:space-between;">
+          <span>📚 Kelola Riwayat Cerita</span>
+          <span>➜</span>
+        </button>
+        <button class="genderchoice" data-view="create" style="text-align:left;display:flex;justify-content:space-between;">
+          <span>✍️ Tulis Cerita Sendiri</span>
+          <span>➜</span>
+        </button>
+        <button class="genderchoice" data-view="settings" style="text-align:left;display:flex;justify-content:space-between;">
+          <span>⚙️ Pengaturan AI & Safe Mode</span>
+          <span>➜</span>
+        </button>
       </div>
     </div>`;
-  }).join("");
-  return `<h2 class="sectiontitle">Perpustakaan</h2><div class="grid">${cards}</div>`;
 }
 
 function viewSettings() {
@@ -437,6 +766,7 @@ function viewSettings() {
             <button class="btn" id="loginBtn" style="font-size:13px">Masuk / Daftar</button>
            </div>`
         : "");
+
   const apiSection = hasAuth
     ? `<div class="cardbox">
         <h3>AI Backend <span class="badge">server-side ✓</span></h3>
@@ -459,7 +789,7 @@ function viewSettings() {
         <div class="field">
           <label>Model</label>
           <input id="cfg_model" list="model_list" placeholder="cth. recursive/flint-v1.0:free" value="${esc(cfg.model)}">
-          <div class="hint">Untuk DeepSeek: isi <b>deepseek/deepseek-chat</b> dan ganti Endpoint ke https://api.deepseek.com/v1 (DeepSeek berbayar tipis).</div>
+          <div class="hint">Untuk DeepSeek: isi <b>deepseek/deepseek-chat</b> dan ganti Endpoint ke https://api.deepseek.com/v1.</div>
         </div>
         <div class="field">
           <label>Endpoint (biarkan kosong = OpenRouter)</label>
@@ -468,75 +798,72 @@ function viewSettings() {
         <button class="btn block" id="savecfg">Simpan</button>
         <div class="note" id="cfgok" style="display:none;margin-top:12px">✓ Tersimpan.</div>
        </div>`;
+
   return `
-    <h2 class="sectiontitle">Pengaturan AI</h2>
+    <h2 class="sectiontitle">Pengaturan Aplikasi</h2>
     <div class="settings">
       ${authBar}
       <div class="cardbox">
         <h3>Safe Mode <span class="badge">${cfg.safe ? "AKTIF" : "NONAKTIF"}</span></h3>
-        <div class="desc">Saat ON, konten dewasa (21+) disembunyikan dan AI menjaga cerita tetap aman untuk semua umur. Saat OFF, cerita 21+ tampil dan AI diizinkan menyajikan tema dewasa.</div>
-        <label class="switchrow">
-          <input type="checkbox" id="cfg_safe" ${cfg.safe ? "checked" : ""}>
-          <span>Mode Aman — filter konten 21+</span>
-        </label>
-        <div class="field" style="margin-top:14px">
-          <label>Konfirmasi usia</label>
-          <div class="desc" style="margin-bottom:6px">${cfg.ageOk ? "✓ Sudah terkonfirmasi 21+." : "Belum dikonfirmasi — gate usia akan muncul saat pembukaan."}</div>
-          <button class="btn" id="age_confirm">Saya sudah berusia 21+</button>
-        </div>
+        <div class="desc">Saat ON, konten dewasa (21+) disembunyikan dan AI menjaga cerita tetap aman untuk semua umur. Matikan untuk membuka cerita dewasa.</div>
+        <button class="btn ${cfg.safe ? "danger" : ""}" id="safe_toggle">
+          ${cfg.safe ? "Matikan Safe Mode" : "Aktifkan Safe Mode"}
+        </button>
       </div>
+
       <div class="cardbox">
-        <h3>Preferensi Cerita <span class="badge">${cfg.gender === "m" ? "Cowok" : cfg.gender === "f" ? "Cewek" : "Semua"}</span></h3>
-        <div class="desc">Home otomatis menampilkan cerita yang paling cocok dengan preferensimu. Cerita buatanmu selalu muncul apa pun preferensinya.</div>
-        <button class="btn" id="gender_btn">Ubah preferensi</button>
+        <h3>Preferensi Cerita <span class="badge">${cfg.gender === "m" ? "💪 Cowok" : cfg.gender === "f" ? "🌸 Cewek" : "🌓 Semua"}</span></h3>
+        <div class="desc">Menyaring cerita benih berdasarkan target pembaca di beranda.</div>
+        <button class="btn" id="gender_btn">Ubah Preferensi</button>
       </div>
+
       ${apiSection}
     </div>
+
     <datalist id="model_list">
       <option value="recursive/flint-v1.0:free">
-      <option value="google/gemini-4-argon">
-      <option value="anthropic/claude-sonnet-5.5">
-      <option value="anthropic/claude-opus-5.5">
-      <option value="openai/gpt-6-luna-pro">
-      <option value="deepseek/deepseek-v4.1-flash-1017">
-      <option value="mistralai/mistral-large-4-0">
-      <option value="qwen/qwen3.8-max-prime">
-      <option value="liquid/lfm-2.5-24b-a2b">
-      <option value="nvidia/nemotron-3.5-super-vl:free">
-      <option value="xingchen-agi/xing4.0-29b-a4b:free">
+      <option value="deepseek/deepseek-chat">
+      <option value="meta-llama/llama-3.3-70b-instruct:free">
+      <option value="google/gemini-2.0-flash-exp:free">
+      <option value="mistralai/mistral-7b-instruct:free">
+      <option value="qwen/qwen-2.5-72b-instruct:free">
+      <option value="openai/gpt-4o-mini">
     </datalist>`;
 }
 
-// ===== layar main =====
 function viewPlay() {
   const story = allStories().find(s => s.id === state.activeStory);
   if (!story) { state.view = "home"; return ""; }
   const sess = getSession(story.id);
 
-  const msgs = sess.messages.map(m => {
+  const msgs = (sess.messages || []).map(m => {
     if (m.role === "ai") {
       return `<div class="msg ai">
         <div class="who">${esc(story.title)}</div>
         <div>${esc(m.text)}</div>
-        ${m.img ? `<img class="img" src="${m.img}" alt="adegan">` : ""}
+        ${m.img ? `<img class="img" src="${m.img}" alt="adegan" onerror="this.onerror=null;this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'640\\' height=\\'360\\'><rect width=\\'100%\\' height=\\'100%\\' fill=\\'%231a1724\\'/><text x=\\'50%\\' y=\\'50%\\' fill=\\'%239b95b8\\' font-family=\\'sans-serif\\' font-size=\\'16\\' text-anchor=\\'middle\\' dominant-baseline=\\'middle\\'>Gambar sedang diproses...</text></svg>'">` : ""}
       </div>`;
     }
     return `<div class="msg user">${esc(m.text)}</div>`;
   }).join("");
 
-  const lastAi = sess.messages.filter(m => m.role === "ai").pop();
+  const lastAi = (sess.messages || []).filter(m => m.role === "ai").pop();
   const sugg = (lastAi && lastAi.sugg) || [];
   const suggHtml = sugg.length ? `
     <div class="sugg">
-      <div class="suglabel">Pilih jawaban:</div>
+      <div class="suglabel">Pilih respon cepat:</div>
       ${sugg.map((s, i) => `<button class="sug" data-sug="${esc(s)}"><span class="num">${String.fromCharCode(65 + i)}</span>${esc(s)}</button>`).join("")}
     </div>` : "";
 
   return `
+    <button class="back-btn" id="backToLib">← Kembali ke Perpustakaan</button>
     <div class="storyhead">
       <img class="cover" src="${imageUrl(story.coverPrompt, 640, 760, 7)}" alt="${esc(story.title)}">
       <div class="info">
-        <div><span class="genrebadge">${esc(story.genre)}</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span class="genrebadge">${esc(story.genre)}</span>
+          <button class="share-btn" data-share="${story.id}">🔗 Bagikan</button>
+        </div>
         <h2>${esc(story.title)}</h2>
         <div class="premise">${esc(story.premise)}</div>
         <div class="chars"><b>Karakter:</b> ${esc(story.characters)}</div>
@@ -544,13 +871,14 @@ function viewPlay() {
     </div>
     <div class="chat" id="chatbox">${msgs}${suggHtml}</div>
     <div class="composer">
-      <input id="chatinput" placeholder="Tulis arah cerita..." autocomplete="off">
+      <input id="chatinput" placeholder="Tulis aksi atau arah ceritamu..." autocomplete="off">
       <button class="sendbtn" id="sendbtn">➤</button>
     </div>`;
 }
 
 function sendMessage(text) {
   const story = allStories().find(s => s.id === state.activeStory);
+  if (!story) return;
   const sess = getSession(story.id);
   sess.messages.push({ role: "user", text });
   saveSession(sess);
@@ -558,16 +886,19 @@ function sendMessage(text) {
   rerenderChat();
 
   const box = $("#chatbox");
-  const typing = document.createElement("div");
-  typing.className = "typing"; typing.textContent = "Karakter menulis...";
-  box.appendChild(typing);
-  box.scrollTop = box.scrollHeight;
+  if (box) {
+    const typing = document.createElement("div");
+    typing.className = "typing";
+    typing.textContent = "Karakter sedang berpikir & menulis...";
+    box.appendChild(typing);
+    box.scrollTop = box.scrollHeight;
+  }
 
   askAI(story, sess).then(res => {
     sess.messages.push({ role: "ai", text: res.reply, img: res.img, sugg: res.sugg });
     saveSession(sess);
   }).catch(err => {
-    sess.messages.push({ role: "ai", text: "(AI gagal: " + err.message + ")", sugg: [] });
+    sess.messages.push({ role: "ai", text: "(AI belum berhasil merespon: " + err.message + ")", sugg: defaultSug() });
     saveSession(sess);
   }).finally(() => {
     state.sending = false;
@@ -579,221 +910,169 @@ function rerenderChat() {
   const story = allStories().find(s => s.id === state.activeStory);
   if (!story) return;
   const sess = getSession(story.id);
-  const msgs = sess.messages.map(m => {
+  const msgs = (sess.messages || []).map(m => {
     if (m.role === "ai") {
       return `<div class="msg ai">
         <div class="who">${esc(story.title)}</div>
         <div>${esc(m.text)}</div>
-        ${m.img ? `<img class="img" src="${m.img}" alt="adegan">` : ""}
+        ${m.img ? `<img class="img" src="${m.img}" alt="adegan" onerror="this.onerror=null;this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'640\\' height=\\'360\\'><rect width=\\'100%\\' height=\\'100%\\' fill=\\'%231a1724\\'/><text x=\\'50%\\' y=\\'50%\\' fill=\\'%239b95b8\\' font-family=\\'sans-serif\\' font-size=\\'16\\' text-anchor=\\'middle\\' dominant-baseline=\\'middle\\'>Gambar sedang diproses...</text></svg>'">` : ""}
       </div>`;
     }
     return `<div class="msg user">${esc(m.text)}</div>`;
   }).join("");
-  const lastAi = sess.messages.filter(m => m.role === "ai").pop();
+
+  const lastAi = (sess.messages || []).filter(m => m.role === "ai").pop();
   const sugg = (lastAi && lastAi.sugg) || [];
   const suggHtml = sugg.length ? `
     <div class="sugg">
-      <div class="suglabel">Pilih jawaban:</div>
+      <div class="suglabel">Pilih respon cepat:</div>
       ${sugg.map((s, i) => `<button class="sug" data-sug="${esc(s)}"><span class="num">${String.fromCharCode(65 + i)}</span>${esc(s)}</button>`).join("")}
     </div>` : "";
-  $("#chatbox").innerHTML = msgs + suggHtml;
-  // bind saran
-  $$(".sug").forEach(b => b.addEventListener("click", () => {
-    if (!state.sending) sendMessage(b.dataset.sug);
-  }));
-  const inp = $("#chatinput");
-  if (inp) inp.focus();
+
   const box = $("#chatbox");
-  if (box) box.scrollTop = box.scrollHeight;
+  if (box) {
+    box.innerHTML = msgs + suggHtml;
+    box.scrollTop = box.scrollHeight;
+    $$(".sug", box).forEach(b => b.addEventListener("click", () => {
+      if (!state.sending && b.dataset.sug) {
+        sendMessage(b.dataset.sug);
+      }
+    }));
+  }
 }
 
-// ===== AI =====
+// ===== AI ENGINE =====
 async function askAI(story, sess) {
   const cfg = getConfig();
 
-  // path Supabase + Vercel proxy: AI call lewat server (key aman)
-  if (SB.ready) {
-    const s = await SBsession();
-    if (s) {
-      const recent = sess.messages.slice(-12).map(m =>
-        (m.role === "user" ? "Pemain: " : story.title + ": ") + m.text
-      ).join("\n");
-
-      // sistem prompt dengan konteks cerita
-      const sysContent = `Kamu penutur AI untuk cerita interaktif visual berjudul "${story.title}".
-Genre: ${story.genre}. Premis: ${story.premise}. Karakter: ${story.characters}.
-Lanjutkan narasi imersif orang kedua, 2-4 kalimat. Berikan 3 opsi aksi (A/B/C). Sertakan satu prompt gambar singkat (Inggris).
-Kebijakan konten: ${cfg.safe ? "SAFE MODE — jaga cerita tetap aman untuk semua umur." : "MODE 21+ — konten dewasa diperbolehkan, tetap naratif."}
-Balas HANYA JSON valid: {"reply":"<narasi>","suggestions":["<opsi A>","<opsi B>","<opsi C>"],"image":"<prompt gambar singkat>"}`;
-
-      const payload = {
-        messages: [
-          { role: "system", content: sysContent },
-          { role: "user", content: recent }
-        ],
+  // 1. Coba Vercel Serverless Function `/api/ai`
+  try {
+    const vRes = await fetch("/api/ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: buildPrompt(story, sess),
         safe: cfg.safe,
-        model: cfg.model || DEFAULT_MODEL,
-      };
-      try {
-        const res = await fetch("/api/ai", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const j = await res.json();
-        if (!res.ok) throw new Error("HTTP " + res.status + " " + (j.error || ""));
-        const content = j.content || "";
-        const parsed = parseAI(content);
-        return {
-          reply: (parsed && parsed.reply) || content.slice(0, 600),
-          sugg: (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length)
-            ? parsed.suggestions.slice(0, 3).map(s => String(s).trim())
-            : defaultSug(parsed),
-          img: (parsed && parsed.image) ? imageUrl(parsed.image) : null,
-        };
-      } catch (e) { throw e; }
+        model: cfg.model
+      })
+    });
+    if (vRes.ok) {
+      const data = await vRes.json();
+      if (data && data.content) return parseAI(data.content);
     }
+  } catch (e) {
+    // Lewati jika lokal atau endpoint vercel tidak ada
   }
 
-  // fallback: panggil langsung dari browser (key di localStorage)
-  const recent = sess.messages.slice(-10).map(m =>
-    (m.role === "user" ? "Pemain: " : story.title + ": ") + m.text
-  ).join("\n");
+  // 2. Direct client call jika apiKey diset
+  if (cfg.apiKey) {
+    let endpoint = cfg.baseUrl || OPENROUTER_URL;
+    if (!endpoint.endsWith("/chat/completions")) {
+      endpoint = endpoint.replace(/\/+$/, "") + "/chat/completions";
+    }
 
-  const system = `Kamu adalah penutur AI untuk cerita interaktif visual berjudul "${story.title}".
-Genre: ${story.genre}.
-Premis: ${story.premise}.
-Karakter: ${story.characters}.
-Tugasmu: lanjutkan cerita sebagai narasi imersif orang kedua ("kamu"). Jawaban singkat 2-4 kalimat, hidup, tidak bertele-tele. Berikan 3 opsi aksi berbeda (A/B/C) yang bisa dipilih pemain untuk melanjutkan alur. Sertakan juga satu prompt gambar singkat (Inggris) yang menggambarkan adegan saat ini untuk di-generate.
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + cfg.apiKey,
+        "HTTP-Referer": window.location.href,
+        "X-Title": "zennAI"
+      },
+      body: JSON.stringify({
+        model: cfg.model || DEFAULT_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt(story, cfg.safe) },
+          ...buildPrompt(story, sess)
+        ],
+        temperature: 0.85,
+        response_format: { type: "json_object" }
+      })
+    });
 
-Kebijakan konten: ${cfg.safe ? "SAFE MODE — jaga cerita tetap aman untuk semua umur; HINDARI tema dewasa, kekerasan eksplisit, dan konten seksual." : "MODE 21+ — konten dewasa diperbolehkan sesuai arah pemain, tetap naratif dan tidak eksplisit berlebihan."}
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Server AI (${res.status}): ${txt.slice(0, 100)}`);
+    }
 
-Balas HANYA JSON valid dengan format:
-{"reply":"<narasi>","suggestions":["<opsi A>","<opsi B>","<opsi C>"],"image":"<prompt gambar singkat>"}`;
-
-  const user = recent;
-
-  if (!cfg.apiKey) {
-    return localNarrator(story, user);
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    return parseAI(content);
   }
 
-  const url = (cfg.baseUrl || OPENROUTER_URL).replace(/\/$/, "") + "/chat/completions";
-  const body = {
-    model: cfg.model || DEFAULT_MODEL,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user }
-    ],
-    temperature: 0.9,
-    response_format: { type: "json_object" }
+  // 3. Fallback narator lokal
+  await new Promise(r => setTimeout(r, 600));
+  return localNarrator(story, sess);
+}
+
+function systemPrompt(story, safe) {
+  const policy = safe
+    ? "SAFE MODE: Hindari konten vulgar, kekerasan sadis, dan topik tidak pantas untuk usia di bawah 21 tahun."
+    : "MODE DEWASA: Cerita diperuntukkan untuk pembaca 21+. Kembangkan konflik, romansa, dan ketegangan secara mendalam dan realistis.";
+  return `Kamu adalah penutur AI untuk visual novel interaktif berjudul "${story.title}".
+Latar: ${story.premise}
+Karakter: ${story.characters}
+Aturan:
+1. Teruskan cerita dari sudut pandang orang kedua ("Kamu").
+2. Tulis narasi singkat 2-4 kalimat yang hidup, penuh atmosfer dan emosi.
+3. Berikan 3 opsi respon/aksi singkat untuk pemain (A, B, C).
+4. Buat prompt gambar dalam bahasa Inggris yang mendeskripsikan adegan terkini.
+${policy}
+Balas HANYA dalam JSON valid:
+{"reply": "<narasi>", "suggestions": ["<opsi A>", "<opsi B>", "<opsi C>"], "image": "<prompt gambar bahasa inggris>"}`;
+}
+
+function buildPrompt(story, sess) {
+  const history = (sess.messages || []).slice(-10).map(m => ({
+    role: m.role === "ai" ? "assistant" : "user",
+    content: m.text
+  }));
+  return history;
+}
+
+function parseAI(raw) {
+  try {
+    const clean = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const parsed = JSON.parse(clean);
+    return {
+      reply: parsed.reply || parsed.text || "Kamu terdiam mengamati sekeliling.",
+      sugg: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 3) : defaultSug(),
+      img: parsed.image ? imageUrl(parsed.image + ", cinematic visual novel art", 640, 760) : null
+    };
+  } catch (e) {
+    return {
+      reply: raw.replace(/\{.*?\}/gs, "").trim() || "Cerita terus berjalan ke arah tak terduga.",
+      sugg: defaultSug(),
+      img: null
+    };
+  }
+}
+
+function defaultSug() {
+  return ["Lanjutkan melangkah", "Tanyakan kebenarannya", "Waspada dan perhatikan sekitar"];
+}
+
+function localNarrator(story, sess) {
+  const lastUser = (sess.messages || []).filter(m => m.role === "user").pop();
+  const txt = lastUser ? lastUser.text.toLowerCase() : "";
+
+  let reply = "Langkahmu membawa alur baru. Udara di sekitarmu berubah hening sejenak saat konsekuensi dari tindakanmu mulai terlihat.";
+  if (txt.includes("bantu") || txt.includes("tolong")) {
+    reply = "Kamu memutuskan untuk mengulurkan tangan. Senyum tipis terukir di wajah mereka — kepercayaan mulai terbangun perlahan di antara kalian.";
+  } else if (txt.includes("lawan") || txt.includes("serang") || txt.includes("usir")) {
+    reply = "Suasana seketika memanas. Ketegangan memuncak saat mereka menyadari bahwa kamu bukan lawan yang bisa diremehkan.";
+  } else if (txt.includes("bicara") || txt.includes("tanya")) {
+    reply = "Pertanyaanmu membuat mereka terdiam beberapa detik, sebelum akhirnya mengungkap sebagian kecil dari rahasia yang tersembunyi.";
+  }
+
+  return {
+    reply,
+    sugg: defaultSug(),
+    img: imageUrl(story.coverPrompt + ", cinematic moment", 640, 760)
   };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + cfg.apiKey
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error("HTTP " + res.status + " — " + t.slice(0, 160));
-  }
-  const j = await res.json();
-  const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "";
-
-  let parsed = null;
-  try { parsed = JSON.parse(content); }
-  catch (e) {
-    // coba ekstrak JSON
-    const m = content.match(/\{[\s\S]*\}/);
-    if (m) { try { parsed = JSON.parse(m[0]); } catch (e2) {} }
-  }
-
-  const reply = (parsed && parsed.reply) || content.slice(0, 600);
-  const sugg = (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length)
-    ? parsed.suggestions.slice(0, 3).map(s => String(s).trim())
-    : defaultSug(parsed);
-  const img = (parsed && parsed.image) ? imageUrl(parsed.image) : null;
-  return { reply, sugg, img };
 }
 
-function parseAI(content) {
-  try { return JSON.parse(content); } catch (e) {}
-  const m = content.match(/\{[\s\S]*\}/);
-  if (m) { try { return JSON.parse(m[0]); } catch (e2) {} }
-  return null;
-}
-
-function defaultSug(parsed) {
-  const r = (parsed && parsed.reply) || "";
-  return [
-    "Selidiki lebih dalam apa yang terjadi di sini.",
-    "Berbicara langsung dengan karakter yang ada.",
-    "Tunggu sebentar dan perhatikan sekelilingmu."
-  ];
-}
-
-// penutur lokal (mode demo tanpa key)
-function localNarrator(story, user) {
-  const lastUser = user.split("\n").pop() || "";
-  const g = story.genre;
-  let reply;
-  if (g === "Romance") {
-    reply = "Kamu menghela napas, menatap orang di seberangmu. Ada sesuatu yang ingin diucapkan — tapi kata-kata itu tersangkut di tenggorokan. Hati berdebar pelan, dan jarak di antara kalian terasa begitu dekat sekaligus begitu jauh.";
-  } else if (g === "Aksi") {
-    reply = "Serangan itu meleset beberapa senti dari wajahmu. Udara berdesis. Kamu menyadari tidak ada waktu untuk ragu — setiap detik membawa konsekuensi baru. Sesuatu bergerak di kegelapan di belakangmu.";
-  } else if (g === "Fantasi") {
-    reply = "Cahaya biru menyala di telapak tanganmu, lalu memudar. Dunia di sekitarmu berdenyut seperti jantung. Kamu tahu: begitu melangkah, tidak ada jalan kembali. Tapi di sinilah kau harus berada.";
-  } else {
-    reply = "Segalanya terasa hening sejenak. Lalu suara langkah kaki memecah keheningan. Kamu mengerjap — situasi ini baru saja berubah dengan cara yang tak terduga.";
-  }
-  const sugg = [
-    "Dekati dan bicara langsung.",
-    "Periksa sekeliling dengan hati-hati.",
-    "Tarik napas dalam, lalu ambil keputusan."
-  ];
-  return { reply, sugg, img: imageUrl(story.coverPrompt + ", scene continuation", 640, 760, 404) };
-}
-
-// boot
-// delegasi global: navigasi via data-view (nav atas + cta)
-document.addEventListener("click", e => {
-  const el = e.target.closest("[data-view]");
-  if (el) { state.view = el.dataset.view; render(); }
-});
-render();
-
-// supabase: init, kalau siap + belum login -> minta login; kalau sudah -> hydrate
-SBinit();
-if (SB.ready) {
-  (async () => {
-    try {
-      const s = await SBsession();
-      if (s) { await hydrateFromCloud(); render(); maybeAskGender(); }
-      else showAuthOverlay();
-    } catch (e) {}
-  })();
-} else {
-  maybeAskGender();
-}
-
-// fallback gambar: kalau Pollinations gagal/lambat, ganti gradient
-const FALLBACK_SVG = "data:image/svg+xml;utf8," + encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="760">' +
-  '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
-  '<stop offset="0" stop-color="#6b4096"/><stop offset="1" stop-color="#2a2340"/>' +
-  '</linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>');
-document.addEventListener("error", e => {
-  if (e.target && e.target.tagName === "IMG" && !e.target.dataset.fb) {
-    e.target.dataset.fb = "1";
-    e.target.src = FALLBACK_SVG;
-  }
-}, true);
-
-// gate usia 21+ (sekali, sampai dikonfirmasi)
+// ===== AGE GATE (21+) =====
 (function ageGate() {
   if (getConfig().ageOk) return;
   const overlay = document.createElement("div");
@@ -802,13 +1081,37 @@ document.addEventListener("error", e => {
     <div class="agegate-box">
       <div class="agegate-logo"><span class="logo">zenn</span>AI</div>
       <h2>Konten Dewasa 21+</h2>
-      <p>zennAI menyediakan cerita dengan tema dewasa (21+). Dengan melanjutkan, kamu menyatakan sudah berusia 21 tahun atau lebih dan menyetujui konten tersebut.</p>
-      <button class="cta" id="ageOkBtn">Saya sudah berusia 21+</button>
-      <div class="agegate-note">Safe Mode default AKTIF — konten 21+ disembunyikan kecuali dinonaktifkan di Pengaturan.</div>
+      <p>zennAI menyediakan cerita interaktif yang beberapa di antaranya memuat tema dewasa (21+). Dengan melanjutkan, kamu menyatakan telah berusia 21 tahun atau lebih.</p>
+      <button class="cta" id="ageOkBtn">Saya Berusia 21 Tahun atau Lebih</button>
+      <div class="agegate-note">Safe Mode default AKTIF — konten 21+ disaring secara otomatis kecuali dinonaktifkan di Pengaturan.</div>
     </div>`;
   document.body.appendChild(overlay);
   overlay.querySelector("#ageOkBtn").addEventListener("click", () => {
-    const c = getConfig(); c.ageOk = true; saveConfig(c);
+    const c = getConfig();
+    c.ageOk = true;
+    saveConfig(c);
     overlay.remove();
+    showToast("Selamat datang di zennAI!", "success");
   });
 })();
+
+// ===== BOOTSTRAP =====
+window.addEventListener("DOMContentLoaded", async () => {
+  // Setup navigasi atas & bawah
+  document.addEventListener("click", e => {
+    const btn = e.target.closest("[data-view]");
+    if (btn) {
+      state.view = btn.dataset.view;
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  });
+
+  // Init Supabase
+  SBinit();
+  if (SB.ready) {
+    await hydrateFromCloud();
+  }
+
+  render();
+});

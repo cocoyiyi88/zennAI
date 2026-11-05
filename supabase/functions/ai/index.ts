@@ -17,10 +17,10 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("method not allowed", { status: 405, headers: CORS });
 
   let body;
-  try { body = await req.json(); } catch { return json(cors, 400, "bad json"); }
+  try { body = await req.json(); } catch { return json(CORS, 400, "bad json"); }
 
   const { messages, safe, model, dev } = body;
-  if (!Array.isArray(messages) || !messages.length) return json(cors, 400, "messages required");
+  if (!Array.isArray(messages) || !messages.length) return json(CORS, 400, "messages required");
 
   const useModel = (model && typeof model === "string") ? model : MODEL;
 
