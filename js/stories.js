@@ -278,6 +278,7 @@ function saveStoryAlbum(storyId, imgUrl, caption) {
       list.push({ url: imgUrl, caption: caption || "", time: Date.now() });
       all[storyId] = list;
       localStorage.setItem("zenn_albums", JSON.stringify(all));
+      if (typeof cloudSync === "function") cloudSync("rpg_" + storyId, () => DB.saveRPG(storyId, getStoryRPGState(storyId), loadStoryAlbum(storyId)));
     }
   } catch (e) {}
 }

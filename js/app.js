@@ -6,7 +6,7 @@ const $$ = sel => document.querySelectorAll(sel);
 const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const state = {
-  view: "home", // home | create | library | settings | play
+  view: "home", // home | create | library | profile | settings | play
   activeStory: null,
   activeGenre: "Semua",
   activeTag: null,
@@ -15,6 +15,74 @@ const state = {
   activeModal: null, // persona | scenario | album | status | zoom
   zoomImageUrl: null,
 };
+
+// ===== Favorit =====
+function getFavorites() {
+  try { return JSON.parse(localStorage.getItem("zenn_favs")) || []; }
+  catch (e) { return []; }
+}
+function isFavorite(id) { return getFavorites().includes(id); }
+function toggleFavorite(id) {
+  const favs = getFavorites();
+  const i = favs.indexOf(id);
+  let added = false;
+  if (i > -1) {
+    favs.splice(i, 1);
+    if (SB.ready && SB.session) DB.removeFavorite(id);
+  } else {
+    favs.push(id);
+    added = true;
+    if (SB.ready && SB.session) DB.addFavorite(id);
+  }
+  localStorage.setItem("zenn_favs", JSON.stringify(favs));
+  showToast(added ? "❤️ Ditambahkan ke favorit" : "🤍 Dihapus dari favorit");
+  render();
+}
+
+// ===== Sinkron cloud (debounce per kunci; no-op jika belum login) =====
+const _syncTimers = {};
+function cloudSync(key, fn) {
+  if (!(SB.ready && SB.session)) return;
+  clearTimeout(_syncTimers[key]);
+  _syncTimers[key] = setTimeout(() => {
+    Promise.resolve().then(fn).catch(e => console.warn("sync gagal:", key, e));
+  }, 800);
+}
+
+// Parse input karakter: "Rena (Pelatih galak), Laila: Instruktur dingin" -> charactersList
+function parseCharacters(text) {
+  const parts = String(text || "").split(/\n|,(?![^()]*\))/).map(x => x.trim()).filter(Boolean).slice(0, 6);
+  const list = parts.map(p => {
+    const m = p.match(/^(.+?)\s*(?:\((.*)\)|:\s*(.*)|\s-\s(.*))?$/);
+    const name = ((m && m[1]) || p).trim().slice(0, 30);
+    const role = ((m && (m[2] || m[3] || m[4])) || "Karakter").trim().slice(0, 60);
+    return { name, role, heart: 10, bio: p, avatarPrompt: "anime character portrait, " + name + ", " + role };
+  });
+  return list.length ? list : [{ name: "Partner", role: "Rekan Utama", heart: 10, bio: "Selalu mendampingimu.", avatarPrompt: "anime friendly companion" }];
+}
+
+// Normalisasi respons AI: afeksi per karakter, pembicara, env opsional
+function normalizeAIResult(parsed, story, raw) {
+  const names = (story.charactersList || []).map(c => c.name);
+  const aff = {};
+  if (parsed.affection && typeof parsed.affection === "object") {
+    Object.entries(parsed.affection).forEach(([k, v]) => {
+      const nm = names.find(n => n.toLowerCase() === String(k).toLowerCase());
+      if (nm && Number.isFinite(+v)) aff[nm] = Math.max(-5, Math.min(5, Math.round(+v)));
+    });
+  } else if (typeof parsed.affection_delta === "number" && names.length) {
+    aff[names[0]] = Math.max(-5, Math.min(5, Math.round(parsed.affection_delta)));
+  }
+  const speaker = names.find(n => n.toLowerCase() === String(parsed.speaker || "").toLowerCase()) || names[0] || story.title;
+  return {
+    reply: parsed.reply || String(raw || "").slice(0, 500),
+    speaker,
+    suggestions: (Array.isArray(parsed.suggestions) && parsed.suggestions.length) ? parsed.suggestions.slice(0, 3).map(String) : defaultQuickSugg(),
+    image: parsed.image ? imageUrl(parsed.image, 640, 760) : null,
+    affection: aff,
+    env: (parsed.env && typeof parsed.env === "object") ? parsed.env : null
+  };
+}
 
 // URL helper & High-Res Aesthetic Fallbacks
 function generateSvgAvatar(name) {
@@ -103,7 +171,9 @@ function getStoryRPGState(storyId) {
 }
 
 function saveStoryRPGState(storyId, rpg) {
+  rpg.updatedAt = Date.now();
   localStorage.setItem("zenn_rpg_" + storyId, JSON.stringify(rpg));
+  cloudSync("rpg_" + storyId, () => DB.saveRPG(storyId, rpg, loadStoryAlbum(storyId)));
 }
 
 // Session Chat Messages
@@ -140,6 +210,7 @@ function getSession(storyId) {
 
 function saveSession(sess) {
   localStorage.setItem("zenn_sess_" + sess.storyId, JSON.stringify(sess));
+  cloudSync("sess_" + sess.storyId, () => DB.saveSession(sess.storyId, sess.messages));
 }
 
 // Render Utama
@@ -151,6 +222,7 @@ function render() {
       <button class="navbtn ${state.view === "home" ? "active" : ""}" data-view="home">Beranda</button>
       <button class="navbtn ${state.view === "library" ? "active" : ""}" data-view="library">Koleksi (${Object.keys(loadLibrary()).length})</button>
       <button class="navbtn ${state.view === "create" ? "active" : ""}" data-view="create">+ Buat Cerita</button>
+      <button class="navbtn ${state.view === "profile" ? "active" : ""}" data-view="profile">Profil</button>
       <button class="navbtn ${state.view === "settings" ? "active" : ""}" data-view="settings">Pengaturan</button>
     `;
   }
@@ -163,9 +235,12 @@ function render() {
     case "create": v.innerHTML = viewCreate(); bindCreate(); break;
     case "library": v.innerHTML = viewLibrary(); bindLibrary(); break;
     case "settings": v.innerHTML = viewSettings(); bindSettings(); break;
+    case "profile": v.innerHTML = viewProfile(); bindProfile(); break;
     case "play": v.innerHTML = viewPlay(); bindPlay(); break;
     default: v.innerHTML = viewHome(); bindHome(); break;
   }
+  document.body.classList.toggle("in-game", state.view === "play");
+  $$("#bottomnav button").forEach(b => b.classList.toggle("active", b.dataset.view === state.view));
   renderModals();
 }
 
@@ -193,6 +268,12 @@ function viewHome() {
     list = list.filter(s => s.title.toLowerCase().includes(q) || (s.tagline && s.tagline.toLowerCase().includes(q)) || (s.tags && s.tags.some(t => t.toLowerCase().includes(q))));
   }
 
+  const favIds = getFavorites();
+  const favStories = all.filter(s => favIds.includes(s.id) && (!cfg.safe || !isMature(s)));
+  const favHtml = favStories.length ? `
+    <h3 class="sectiontitle">❤️ Favoritmu</h3>
+    <div class="chips">${favStories.map(s => `<button class="chip fav-chip" data-open="${esc(s.id)}">${esc(s.title)}</button>`).join("")}</div>` : "";
+
   const chipsHtml = ["Semua", ...GENRES].map(g =>
     `<button class="chip ${state.activeGenre === g ? "active" : ""}" data-genre="${esc(g)}">${esc(g)}</button>`
   ).join("");
@@ -203,7 +284,7 @@ function viewHome() {
     const statsHtml = s.stats ? `<div class="card-stats"><span>🎨 ${s.stats.assets || 100}+</span><span>💬 ${s.stats.chats || '1K'}</span></div>` : "";
     
     return `
-      <div class="card" data-story="${esc(s.id)}">
+      <div class="card" data-story="${esc(s.id)}"><button class="fav-btn" data-fav="${esc(s.id)}" title="Favorit">${isFavorite(s.id) ? "❤️" : "🤍"}</button>
         <img class="cover" src="${imageUrl(s.coverPrompt, 400, 260, 42)}" alt="${esc(s.title)}" loading="lazy">
         <div class="body">
           <div style="display:flex;justify-content:space-between;align-items:center">
@@ -226,13 +307,15 @@ function viewHome() {
         <input id="search-input" style="max-width:320px;padding:10px 16px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:14px;outline:none" placeholder="Cari judul, tag, tema..." value="${esc(state.searchQuery)}">
       </div>
     </div>
+    ${favHtml}
     <div class="chips">${chipsHtml}</div>
     <div class="grid">${cardsHtml}</div>
   `;
 }
 
 function bindHome() {
-  $$(".chip").forEach(c => c.addEventListener("click", () => {
+  $$("[data-open]").forEach(b => b.addEventListener("click", () => openStory(b.dataset.open)));
+  $$(".chip[data-genre]").forEach(c => c.addEventListener("click", () => {
     state.activeGenre = c.dataset.genre;
     render();
   }));
@@ -257,7 +340,7 @@ function bindHome() {
       const grid = $(".grid");
       if (grid) {
         grid.innerHTML = list.length ? list.map(s => `
-          <div class="card" data-story="${esc(s.id)}">
+          <div class="card" data-story="${esc(s.id)}"><button class="fav-btn" data-fav="${esc(s.id)}" title="Favorit">${isFavorite(s.id) ? "❤️" : "🤍"}</button>
             <img class="cover" src="${imageUrl(s.coverPrompt, 400, 260, 42)}" alt="${esc(s.title)}" loading="lazy">
             <div class="body">
               <div style="display:flex;justify-content:space-between;align-items:center">
@@ -277,8 +360,22 @@ function bindHome() {
   bindCardClicks();
 }
 
+function openStory(id) {
+  state.activeStory = id;
+  state.view = "play";
+  const lib = loadLibrary();
+  if (!lib[id]) { lib[id] = { addedAt: Date.now() }; saveLibrary(lib); }
+  render();
+}
+
 function bindCardClicks() {
-  $$(".card").forEach(c => c.addEventListener("click", () => {
+  $$(".fav-btn").forEach(b => b.addEventListener("click", e => {
+    e.stopPropagation();
+    toggleFavorite(b.dataset.fav);
+  }));
+  $$("[data-open]").forEach(b => b.addEventListener("click", () => openStory(b.dataset.open)));
+  $$(".card").forEach(c => c.addEventListener("click", e => {
+    if (e.target.closest(".fav-btn")) return;
     state.activeStory = c.dataset.story;
     state.view = "play";
     // catat ke koleksi jika belum ada
@@ -357,9 +454,7 @@ function bindCreate() {
         premise,
         tagline: premise.slice(0, 80) + "...",
         characters: $("#c_chars").value.trim() || "Karakter Misterius",
-        charactersList: [
-          { name: "Partner", role: "Rekan Utama", heart: 10, bio: "Selalu mendampingimu.", avatarPrompt: "anime handsome friendly companion" }
-        ],
+        charactersList: parseCharacters($("#c_chars").value),
         coverPrompt: $("#c_cover").value.trim() || "anime aesthetic cinematic background, vibrant style",
         env: { day: "Hari ke-1", time: "10:00", location: "Awal Petualangan", status: "Bersiap" },
         mission: { title: "Langkah Pertama", client: "Diri Sendiri", objective: "Mulai perjalanan baru" },
@@ -377,9 +472,9 @@ function bindCreate() {
 // View: Settings
 function viewSettings() {
   const cfg = getConfig();
-  const authBar = SB.user ? `
+  const authBar = (SB.session && SB.session.user) ? `
     <div class="authbar">
-      <div>Masuk sebagai: <span class="email">${esc(SB.user.email)}</span></div>
+      <div>Masuk sebagai: <span class="email">${esc(SB.session.user.email)}</span></div>
       <button class="logout" id="logoutbtn">Keluar</button>
     </div>` : `
     <div class="authbar">
@@ -458,11 +553,11 @@ function viewSettings() {
 function bindSettings() {
   const safeCb = $("#cfg_safe");
   if (safeCb) safeCb.addEventListener("change", e => {
-    const c = getConfig(); c.safe = e.target.checked; saveConfig(c);
+    const c = getConfig(); c.safe = e.target.checked; saveConfig(c); cloudSync("profile", () => DB.saveProfile(getConfig()));
   });
 
   const bGender = $("#btn_gender_toggle");
-  if (bGender) bGender.addEventListener("click", () => showGenderModal());
+  if (bGender) bGender.addEventListener("click", () => showGenderOverlay());
 
   const bPersona = $("#btn_save_persona");
   if (bPersona) bPersona.addEventListener("click", () => {
@@ -479,12 +574,13 @@ function bindSettings() {
     const c = getConfig();
     c.model = $("#cfg_model").value.trim() || DEFAULT_MODEL;
     saveConfig(c);
+    cloudSync("profile", () => DB.saveProfile(getConfig()));
     alert("Model tersimpan: " + c.model);
   });
 
   const lOut = $("#logoutbtn");
   if (lOut) lOut.addEventListener("click", async () => {
-    await SBlogout();
+    await SBsignOut();
     location.reload();
   });
 
@@ -519,7 +615,8 @@ function viewPlay() {
     const charName = m.sender || story.title;
     const charObj = (story.charactersList || []).find(c => c.name.toLowerCase() === charName.toLowerCase()) || (story.charactersList && story.charactersList[0]);
     const avPrompt = charObj ? charObj.avatarPrompt : "anime visual novel character portrait";
-    const deltaTag = m.delta ? `<div class="affection-delta">❤️ +${m.delta} Kasih Sayang (${esc(charName)})</div>` : "";
+    const deltaEntries = m.deltas ? Object.entries(m.deltas).filter(([, v]) => v) : (m.delta ? [[charName, m.delta]] : []);
+    const deltaTag = deltaEntries.map(([n, v]) => `<div class="affection-delta">❤️ ${v > 0 ? "+" : ""}${v} Kasih Sayang (${esc(n)})</div>`).join("");
 
     return `
       <div class="chat-row ai-row">
@@ -696,11 +793,17 @@ async function sendGameMessage(userText) {
     const result = await requestAIRPGResponse(story, sess, rpg, cfg);
     
     // Update RPG state (Affection, Scene, Album)
-    if (result.affection_delta && story.charactersList && story.charactersList.length) {
-      const primeChar = story.charactersList[0].name;
-      rpg.affection[primeChar] = (rpg.affection[primeChar] || 10) + result.affection_delta;
-      saveStoryRPGState(story.id, rpg);
+    const aff = result.affection || {};
+    rpg.affection = rpg.affection || {};
+    Object.entries(aff).forEach(([n, v]) => {
+      rpg.affection[n] = Math.max(0, Math.min(100, (rpg.affection[n] ?? 10) + v));
+    });
+    if (result.env) {
+      ["location", "time", "day", "status"].forEach(k => {
+        if (typeof result.env[k] === "string" && result.env[k].trim()) rpg.env[k] = result.env[k].trim().slice(0, 60);
+      });
     }
+    saveStoryRPGState(story.id, rpg);
 
     if (result.image) {
       saveStoryAlbum(story.id, result.image, result.reply.slice(0, 50));
@@ -708,11 +811,11 @@ async function sendGameMessage(userText) {
 
     sess.messages.push({
       role: "ai",
-      sender: (story.charactersList && story.charactersList[0]) ? story.charactersList[0].name : story.title,
+      sender: result.speaker,
       text: result.reply,
       img: result.image,
       sugg: result.suggestions,
-      delta: result.affection_delta
+      deltas: aff
     });
     saveSession(sess);
   } catch (err) {
@@ -750,7 +853,7 @@ Daftar Karakter: ${JSON.stringify(story.charactersList || story.characters)}.
 INSTRUKSI:
 1. Lanjutkan cerita dengan gaya visual novel interaktif yang hidup, deskriptif, dan memikat (2-4 kalimat).
 2. Libatkan reaksi emosional karakter terhadap pilihan ${personaName}.
-3. Tentukan pertambahan afeksi (affection_delta) integer antara 1 sampai 5 jika tindakan pemain menyenangkan/menarik, atau 0.
+3. Tentukan perubahan afeksi PER KARAKTER (field "affection", integer -3 sampai 5). Hanya sertakan karakter yang bereaksi. Pakai nama persis dari Daftar Karakter. Field "speaker" = karakter yang paling dominan berbicara.
 4. Berikan tepat 3 opsi aksi cepat (suggestions) yang logis dan variatif untuk pemain.
 5. Buat prompt visual singkat bahasa Inggris (image) yang menggambarkan momen krusial saat ini.
 Kebijakan Konten: ${cfg.safe ? "SAFE MODE: Hindari konten seksual dan kekerasan ekstrem." : "MODE BEBAS 21+: Bolehkan nuansa romansa dewasa, ketegangan intens, dan binal naratif."}
@@ -758,9 +861,11 @@ Kebijakan Konten: ${cfg.safe ? "SAFE MODE: Hindari konten seksual dan kekerasan 
 KEMBALIKAN HANYA JSON VALID:
 {
   "reply": "narasi respons cerita...",
+  "speaker": "nama karakter",
   "suggestions": ["opsi 1", "opsi 2", "opsi 3"],
   "image": "anime scene prompt english",
-  "affection_delta": 2
+  "affection": {"NamaKarakter": 2},
+  "env": {"location": "opsional, isi jika berpindah tempat", "time": "opsional", "day": "opsional", "status": "opsional"}
 }`;
 
   // Coba Vercel Proxy /api/ai
@@ -783,12 +888,7 @@ KEMBALIKAN HANYA JSON VALID:
       const content = data.content || "";
       const parsed = parseAIContent(content);
       if (parsed) {
-        return {
-          reply: parsed.reply || content.slice(0, 500),
-          suggestions: (Array.isArray(parsed.suggestions) && parsed.suggestions.length) ? parsed.suggestions.slice(0, 3) : defaultQuickSugg(),
-          image: parsed.image ? imageUrl(parsed.image, 640, 760) : null,
-          affection_delta: typeof parsed.affection_delta === "number" ? parsed.affection_delta : 1
-        };
+        return normalizeAIResult(parsed, story, content);
       }
     }
   } catch (proxyErr) {
@@ -819,12 +919,7 @@ KEMBALIKAN HANYA JSON VALID:
       const c = dj.choices && dj.choices[0] && dj.choices[0].message && dj.choices[0].message.content;
       const parsed = parseAIContent(c);
       if (parsed) {
-        return {
-          reply: parsed.reply,
-          suggestions: parsed.suggestions || defaultQuickSugg(),
-          image: parsed.image ? imageUrl(parsed.image, 640, 760) : null,
-          affection_delta: parsed.affection_delta || 1
-        };
+        return normalizeAIResult(parsed, story, c);
       }
     }
     }
@@ -833,7 +928,7 @@ KEMBALIKAN HANYA JSON VALID:
   }
 
   // Fallback cerdas offline simulator jika offline atau API limit
-  return simulateOfflineStory(story, userText);
+  return simulateOfflineStory(story);
 }
 
 function parseAIContent(content) {
@@ -854,7 +949,7 @@ function defaultQuickSugg() {
   ];
 }
 
-function simulateOfflineStory(story, userText) {
+function simulateOfflineStory(story) {
   const replies = [
     `Tatapan matanya tertuju langsung padamu. Menanggapi perkataanmu, suasana seketika terasa semakin intim. "Kamu selalu tahu cara membuat situasi jadi menarik," bisiknya pelan.`,
     `Langkahmu terbukti tepat. Keadaan di sekitar perlahan berubah sesuai arahanmu, dan rekanmu mengangguk mantap menunjukkan kepercayaan penuh kepadamu.`,
@@ -865,7 +960,9 @@ function simulateOfflineStory(story, userText) {
     reply: randReply,
     suggestions: defaultQuickSugg(),
     image: imageUrl(story.coverPrompt + ", dramatic close up character emotion scene", 640, 760),
-    affection_delta: 2
+    speaker: (story.charactersList && story.charactersList[0]) ? story.charactersList[0].name : story.title,
+    affection: (story.charactersList && story.charactersList[0]) ? { [story.charactersList[0].name]: 2 } : {},
+    env: null
   };
 }
 
@@ -1038,6 +1135,13 @@ function renderModals() {
   const saveSc = wrap.querySelector("#btn-save-modal-scenario");
   if (saveSc && story) {
     saveSc.addEventListener("click", () => {
+      const rawTime = wrap.querySelector("#modal_sc_time").value.trim();
+      if (rawTime) {
+        const parts = rawTime.split(/\s+[-–]\s+/);
+        if (parts.length >= 2) { rpg.env.day = parts[0]; rpg.env.time = parts.slice(1).join(" - "); }
+        else if (/^\d{1,2}[:.]\d{2}$/.test(rawTime)) rpg.env.time = rawTime;
+        else rpg.env.day = rawTime;
+      }
       rpg.env.location = wrap.querySelector("#modal_sc_loc").value.trim() || rpg.env.location;
       rpg.env.status = wrap.querySelector("#modal_sc_status").value.trim() || rpg.env.status;
       saveStoryRPGState(story.id, rpg);
@@ -1066,41 +1170,17 @@ function saveUserStory(story) {
   const list = getUserStories();
   list.unshift(story);
   localStorage.setItem("zenn_user_stories", JSON.stringify(list));
+  if (SB.ready && SB.session) DB.upsertStory(story);
 }
 
-// Global Nav delegation
-document.addEventListener("click", e => {
-  const el = e.target.closest("[data-view]");
-  if (el) { state.view = el.dataset.view; render(); }
-});
-
-// Booting App
-render();
-
-// Supabase Init
-SBinit();
-if (SB.ready) {
-  (async () => {
-    try {
-      const s = await SBsession();
-      if (s) { await hydrateFromCloud(); render(); maybeAskGender(); }
-      else showAuthOverlay();
-    } catch (e) {}
-  })();
-} else {
-  maybeAskGender();
-}
-
-// Fallback image
-const FALLBACK_SVG = "data:image/svg+xml;utf8," + encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="760">' +
-  '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
-  '<stop offset="0" stop-color="#6b4096"/><stop offset="1" stop-color="#2a2340"/>' +
-  '</linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>');
+// Fallback gambar
 document.addEventListener("error", e => {
-  if (e.target && e.target.tagName === "IMG" && !e.target.dataset.fb) {
-    e.target.dataset.fb = "1";
-    e.target.src = FALLBACK_SVG;
+  const t = e.target;
+  if (t && t.tagName === "IMG" && !t.dataset.fb) {
+    t.dataset.fb = "1";
+    t.src = t.classList.contains("chat-avatar") || t.classList.contains("char-card-avatar")
+      ? generateSvgAvatar(t.alt || "AI")
+      : generateSceneFallback(t.alt || "Adegan Cerita");
   }
 }, true);
 
@@ -1138,9 +1218,222 @@ function showToast(msg, type = "info") {
   });
 })();
 
-// ===== BOOTSTRAP =====
-window.addEventListener("DOMContentLoaded", async () => {
-  // Setup navigasi atas & bawah
+
+// ===== Profil =====
+function viewProfile() {
+  const user = SB.session && SB.session.user;
+  const email = user ? user.email : "Tamu (Mode Lokal)";
+  let played = 0, totalMsgs = 0, albumCount = 0;
+  Object.keys(localStorage).filter(k => k.startsWith("zenn_sess_")).forEach(k => {
+    played++;
+    try { totalMsgs += (JSON.parse(localStorage.getItem(k)).messages || []).length; } catch (e) {}
+  });
+  try {
+    albumCount = Object.values(JSON.parse(localStorage.getItem("zenn_albums")) || {}).reduce((a, l) => a + l.length, 0);
+  } catch (e) {}
+  return `
+    <div class="profile-header">
+      <div class="avatar">${esc(email.charAt(0).toUpperCase())}</div>
+      <h2 style="margin:0 0 6px">${esc(email)}</h2>
+      <div style="color:var(--muted);font-size:14px">${user ? "Akun Cloud Terverifikasi ✓" : "Penyimpanan Browser Lokal"}</div>
+      ${!user && SB.ready ? `<button class="cta" id="loginBtn" style="margin-top:16px;padding:8px 20px;font-size:13px">Masuk / Daftar Akun Cloud</button>` : ""}
+      ${user ? `<button class="btn" id="profileLogout" style="margin-top:16px;padding:8px 20px;font-size:13px">Keluar</button>` : ""}
+    </div>
+    <div class="profile-stats">
+      <div class="stat-card"><div class="stat-num">📖 ${played}</div><div class="stat-label">Cerita Dimainkan</div></div>
+      <div class="stat-card"><div class="stat-num">💬 ${totalMsgs}</div><div class="stat-label">Pesan Cerita</div></div>
+      <div class="stat-card"><div class="stat-num">❤️ ${getFavorites().length}</div><div class="stat-label">Favorit</div></div>
+      <div class="stat-card"><div class="stat-num">🖼️ ${albumCount}</div><div class="stat-label">Koleksi Adegan</div></div>
+    </div>
+    <div class="cardbox" style="margin-top:24px">
+      <h3 style="margin-top:0">Menu Cepat</h3>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <button class="genderchoice" data-view="library" style="text-align:left">📚 Kelola Riwayat Cerita</button>
+        <button class="genderchoice" data-view="create" style="text-align:left">✍️ Tulis Cerita Sendiri</button>
+        <button class="genderchoice" data-view="settings" style="text-align:left">⚙️ Persona, Model AI & Safe Mode</button>
+      </div>
+    </div>`;
+}
+function bindProfile() {
+  const l = $("#loginBtn");
+  if (l) l.addEventListener("click", () => showAuthOverlay());
+  const o = $("#profileLogout");
+  if (o) o.addEventListener("click", async () => { await SBsignOut(); location.reload(); });
+}
+
+// ===== Sinkron dari cloud =====
+async function hydrateFromCloud() {
+  if (!SB.ready) return;
+  const sess = await SBsession();
+  if (!sess) return;
+
+  const prof = await DB.getProfile();
+  if (prof) {
+    const c = loadConfig();
+    if (prof.safe_mode != null) c.safe = prof.safe_mode;
+    if (prof.age_ok === true) c.ageOk = true;
+    if (prof.model) c.model = prof.model;
+    saveConfig(c);
+  }
+
+  // Favorit: gabungan lokal + cloud
+  const cloudFavs = (await DB.getFavorites()) || [];
+  const localFavs = getFavorites();
+  localStorage.setItem("zenn_favs", JSON.stringify([...new Set([...cloudFavs, ...localFavs])]));
+  localFavs.filter(id => !cloudFavs.includes(id)).forEach(id => DB.addFavorite(id));
+
+  // Cerita buatan user
+  const cs = await DB.listStories();
+  if (cs) {
+    const localStories = getUserStories();
+    const ids = new Set(cs.map(x => x.id));
+    const onlyLocal = localStories.filter(x => !ids.has(x.id));
+    localStorage.setItem("zenn_user_stories", JSON.stringify([...cs.map(x => ({ ...x, custom: true })), ...onlyLocal]));
+    onlyLocal.forEach(x => DB.upsertStory(x));
+  }
+
+  // Sesi chat (pakai yang pesannya lebih panjang)
+  const rows = (await DB.listSessions()) || [];
+  const lib = loadLibrary();
+  rows.forEach(r => {
+    const key = "zenn_sess_" + r.story_id;
+    let local = null;
+    try { local = JSON.parse(localStorage.getItem(key)); } catch (e) {}
+    if (!local || !Array.isArray(local.messages) || local.messages.length < r.messages.length) {
+      localStorage.setItem(key, JSON.stringify({ storyId: r.story_id, messages: r.messages }));
+      if (!lib[r.story_id]) lib[r.story_id] = { addedAt: Date.now() };
+    }
+  });
+  saveLibrary(lib);
+  Object.keys(localStorage).filter(k => k.startsWith("zenn_sess_")).forEach(k => {
+    const id = k.slice("zenn_sess_".length);
+    const row = rows.find(r => r.story_id === id);
+    try {
+      const l = JSON.parse(localStorage.getItem(k));
+      if (l && Array.isArray(l.messages) && (!row || l.messages.length > row.messages.length)) DB.saveSession(id, l.messages);
+    } catch (e) {}
+  });
+
+  // State RPG (afeksi, env, misi) + album
+  const rpgRows = (await DB.listRPG()) || [];
+  const albums = (() => { try { return JSON.parse(localStorage.getItem("zenn_albums")) || {}; } catch (e) { return {}; } })();
+  rpgRows.forEach(r => {
+    let local = null;
+    try { local = JSON.parse(localStorage.getItem("zenn_rpg_" + r.story_id)); } catch (e) {}
+    if (r.state && (!local || (r.state.updatedAt || 0) > (local.updatedAt || 0))) {
+      localStorage.setItem("zenn_rpg_" + r.story_id, JSON.stringify(r.state));
+    }
+    const have = albums[r.story_id] || [];
+    const urls = new Set(have.map(a => a.url));
+    (r.album || []).forEach(a => { if (!urls.has(a.url)) have.push(a); });
+    albums[r.story_id] = have;
+  });
+  localStorage.setItem("zenn_albums", JSON.stringify(albums));
+}
+
+// ===== Login & onboarding =====
+function showAuthOverlay() {
+  if (document.querySelector(".authmodal")) return;
+  const el = document.createElement("div");
+  el.className = "authmodal";
+  el.innerHTML = `
+    <div class="authmodal-box">
+      <div class="agegate-logo"><span class="logo">zenn</span>AI</div>
+      <h2>Masuk ke akun</h2>
+      <p>Cerita, afeksi, dan album tersimpan di cloud & sinkron lintas perangkat.</p>
+      <input id="auth_email" type="email" placeholder="Email" autocomplete="email">
+      <input id="auth_pass" type="password" placeholder="Kata sandi" autocomplete="current-password">
+      <button class="btn block" id="auth_btn">Masuk</button>
+      <button class="authtoggle" id="auth_toggle">Belum punya akun? Daftar</button>
+      <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+        <button class="authtoggle" id="auth_skip" style="color:var(--muted)">Lanjut tanpa login (mode lokal)</button>
+      </div>
+      <div class="authnote" id="auth_note"></div>
+    </div>`;
+  document.body.appendChild(el);
+
+  let mode = "in";
+  const email = el.querySelector("#auth_email");
+  const pass = el.querySelector("#auth_pass");
+  const note = el.querySelector("#auth_note");
+  const toggle = el.querySelector("#auth_toggle");
+  const btn = el.querySelector("#auth_btn");
+
+  el.querySelector("#auth_skip").addEventListener("click", () => {
+    localStorage.setItem("zenn_guest", "1");
+    el.remove();
+    maybeAskGender();
+  });
+
+  toggle.addEventListener("click", () => {
+    mode = mode === "in" ? "up" : "in";
+    btn.textContent = mode === "in" ? "Masuk" : "Daftar";
+    toggle.textContent = mode === "in" ? "Belum punya akun? Daftar" : "Sudah punya akun? Masuk";
+    note.textContent = "";
+  });
+
+  const done = async msg => {
+    await hydrateFromCloud();
+    el.remove();
+    localStorage.removeItem("zenn_guest");
+    showToast(msg, "success");
+    render();
+    maybeAskGender();
+  };
+
+  btn.addEventListener("click", async () => {
+    note.textContent = "Tunggu...";
+    note.style.display = "block";
+    try {
+      if (mode === "in") {
+        await SBsignIn(email.value.trim(), pass.value);
+        await done("Berhasil masuk!");
+      } else {
+        const s2 = await SBsignUp(email.value.trim(), pass.value);
+        if (s2) await done("Pendaftaran berhasil!");
+        else {
+          note.textContent = "✓ Pendaftaran berhasil! Cek email untuk konfirmasi, lalu Masuk.";
+          mode = "in";
+          btn.textContent = "Masuk";
+          toggle.textContent = "Belum punya akun? Daftar";
+        }
+      }
+    } catch (e) {
+      note.textContent = "Gagal: " + (e.message || e.error_description || "coba lagi");
+    }
+  });
+}
+
+function showGenderOverlay() {
+  if (document.querySelector(".gendermodal")) return;
+  const el = document.createElement("div");
+  el.className = "gendermodal";
+  el.innerHTML = `
+    <div class="gendermodal-box">
+      <div class="agegate-logo"><span class="logo">zenn</span>AI</div>
+      <h2>Pilih Preferensi Cerita</h2>
+      <p>Supaya cerita yang tampil paling cocok. Bisa diubah kapan saja di Pengaturan.</p>
+      <button class="genderchoice" data-gender="m">💪 Cowok</button>
+      <button class="genderchoice" data-gender="f">🌸 Cewek</button>
+      <button class="genderchoice" data-gender="all">🌓 Semua</button>
+    </div>`;
+  document.body.appendChild(el);
+  el.querySelectorAll(".genderchoice").forEach(b => b.addEventListener("click", () => {
+    const cfg = getConfig();
+    cfg.gender = b.dataset.gender;
+    cfg.genderChosen = true;
+    saveConfig(cfg);
+    el.remove();
+    render();
+  }));
+}
+
+function maybeAskGender() {
+  if (!getConfig().genderChosen) showGenderOverlay();
+}
+
+// ===== BOOTSTRAP (satu kali) =====
+(function boot() {
   document.addEventListener("click", e => {
     const btn = e.target.closest("[data-view]");
     if (btn) {
@@ -1149,12 +1442,18 @@ window.addEventListener("DOMContentLoaded", async () => {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
   });
-
-  // Init Supabase
+  render();
   SBinit();
   if (SB.ready) {
-    await hydrateFromCloud();
+    (async () => {
+      try {
+        const sess = await SBsession();
+        if (sess) { await hydrateFromCloud(); render(); maybeAskGender(); }
+        else if (localStorage.getItem("zenn_guest") === "1") maybeAskGender();
+        else showAuthOverlay();
+      } catch (e) { console.warn("boot cloud:", e); maybeAskGender(); }
+    })();
+  } else {
+    maybeAskGender();
   }
-
-  render();
-});
+})();

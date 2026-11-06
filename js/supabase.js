@@ -44,93 +44,95 @@ async function SBsignOut() {
   SB.session = null;
 }
 
-// ===== DB facade (dipakai app.js) =====
+// ===== DB facade (dipakai app.js). Semua method aman dipanggil tanpa login. =====
+async function _uid() {
+  if (!SB.ready) return null;
+  const s = await SBsession();
+  return s ? s.user.id : null;
+}
+
 const DB = {
-  // --- profile/settings ---
+  // --- profil/pengaturan ---
   async getProfile() {
-    if (!SB.ready) return null;
-    const s = await SBsession();
-    if (!s) return null;
+    const uid = await _uid(); if (!uid) return null;
     const { data, error } = await SB.client.from("profiles")
-      .select("safe_mode, age_ok, model").eq("id", s.user.id).maybeSingle();
+      .select("safe_mode, age_ok, model").eq("id", uid).maybeSingle();
     return error ? null : (data || {});
   },
   async saveProfile(p) {
-    if (!SB.ready) return;
-    const s = await SBsession();
-    if (!s) return;
+    const uid = await _uid(); if (!uid) return;
     await SB.client.from("profiles").update({
       safe_mode: !!p.safe, age_ok: !!p.ageOk, model: p.model || null,
-    }).eq("id", s.user.id);
+    }).eq("id", uid);
   },
-  // --- custom stories ---
+  // --- cerita buatan user (seluruh objek disimpan di kolom data) ---
   async listStories() {
-    if (!SB.ready) return null;
-    const s = await SBsession();
-    if (!s) return null;
+    const uid = await _uid(); if (!uid) return null;
     const { data, error } = await SB.client.from("stories")
-      .select("id, title, tagline, genre, cover_prompt, premise, characters, opening, is_mature")
-      .or(`owner.eq.${s.user.id},owner.is.null`)
-      .order("created_at", { ascending: false });
+      .select("id, title, tagline, genre, cover_prompt, premise, characters, opening, is_mature, data")
+      .eq("owner", uid).order("created_at", { ascending: false });
     if (error) return null;
     return (data || []).map(r => ({
+      ...(r.data || {}),
       id: r.id, title: r.title, tagline: r.tagline, genre: r.genre,
       coverPrompt: r.cover_prompt, premise: r.premise, characters: r.characters,
       opening: r.opening, mature: !!r.is_mature,
     }));
   },
   async upsertStory(st) {
-    if (!SB.ready) return;
-    const s = await SBsession();
-    if (!s) return;
-    await SB.client.from("stories").upsert({
-      id: st.id, owner: s.user.id, title: st.title, tagline: st.tagline,
+    const uid = await _uid(); if (!uid) return;
+    const { error } = await SB.client.from("stories").upsert({
+      id: st.id, owner: uid, title: st.title, tagline: st.tagline,
       genre: st.genre, cover_prompt: st.coverPrompt, premise: st.premise,
-      characters: st.characters, opening: st.opening, is_mature: !!st.mature,
+      characters: typeof st.characters === "string" ? st.characters : "",
+      opening: st.opening, is_mature: !!st.mature, data: st,
     });
+    if (error) console.warn("upsertStory:", error.message);
   },
-  // --- sessions ---
-  async getSession(storyId) {
-    if (!SB.ready) return null;
-    const s = await SBsession();
-    if (!s) return null;
-    const { data } = await SB.client.from("sessions")
-      .select("messages").eq("owner", s.user.id).eq("story_id", storyId).maybeSingle();
-    return data ? { messages: data.messages || [] } : null;
+  // --- sesi chat ---
+  async listSessions() {
+    const uid = await _uid(); if (!uid) return null;
+    const { data, error } = await SB.client.from("sessions")
+      .select("story_id, messages").eq("owner", uid);
+    return error ? null : (data || []).map(r => ({ story_id: r.story_id, messages: r.messages || [] }));
   },
   async saveSession(storyId, messages) {
-    if (!SB.ready) return;
-    const s = await SBsession();
-    if (!s) return;
-    await SB.client.from("sessions").upsert({
-      owner: s.user.id, story_id: storyId, messages, updated_at: new Date().toISOString(),
-    });
+    const uid = await _uid(); if (!uid) return;
+    const { error } = await SB.client.from("sessions").upsert(
+      { owner: uid, story_id: storyId, messages, updated_at: new Date().toISOString() },
+      { onConflict: "owner,story_id" });
+    if (error) console.warn("saveSession:", error.message);
   },
   async deleteSession(storyId) {
-    if (!SB.ready) return;
-    const s = await SBsession();
-    if (!s) return;
-    await SB.client.from("sessions").delete().eq("owner", s.user.id).eq("story_id", storyId);
+    const uid = await _uid(); if (!uid) return;
+    await SB.client.from("sessions").delete().eq("owner", uid).eq("story_id", storyId);
   },
-  // --- favorites ---
+  // --- state RPG (afeksi, env, misi) + album ---
+  async listRPG() {
+    const uid = await _uid(); if (!uid) return null;
+    const { data, error } = await SB.client.from("rpg_states")
+      .select("story_id, state, album").eq("owner", uid);
+    return error ? null : (data || []);
+  },
+  async saveRPG(storyId, state, album) {
+    const uid = await _uid(); if (!uid) return;
+    const { error } = await SB.client.from("rpg_states").upsert(
+      { owner: uid, story_id: storyId, state, album: album || [], updated_at: new Date().toISOString() },
+      { onConflict: "owner,story_id" });
+    if (error) console.warn("saveRPG:", error.message);
+  },
+  // --- favorit ---
   async getFavorites() {
-    if (!SB.ready) return [];
-    const s = await SBsession();
-    if (!s) return [];
-    const { data } = await SB.client.from("favorites")
-      .select("story_id").eq("owner", s.user.id);
+    const uid = await _uid(); if (!uid) return [];
+    const { data } = await SB.client.from("favorites").select("story_id").eq("owner", uid);
     return (data || []).map(r => r.story_id);
   },
   async addFavorite(storyId) {
-    if (!SB.ready) return;
-    const s = await SBsession();
-    if (!s) return;
-    await SB.client.from("favorites").upsert({ owner: s.user.id, story_id: storyId });
+    const uid = await _uid(); if (!uid) return;
+    await SB.client.from("favorites").upsert({ owner: uid, story_id: storyId });
   },
   async removeFavorite(storyId) {
-    if (!SB.ready) return;
-    const s = await SBsession();
-    if (!s) return;
-    await SB.client.from("favorites").delete().eq("owner", s.user.id).eq("story_id", storyId);
+    const uid = await _uid(); if (!uid) return;
+    await SB.client.from("favorites").delete().eq("owner", uid).eq("story_id", storyId);
   },
 };
