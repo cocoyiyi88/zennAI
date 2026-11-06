@@ -1104,6 +1104,17 @@ document.addEventListener("error", e => {
   }
 }, true);
 
+// Toast notifikasi ringan
+function showToast(msg, type = "info") {
+  const box = document.getElementById("toasts");
+  if (!box) return;
+  const el = document.createElement("div");
+  el.className = "toast " + type;
+  el.textContent = msg;
+  box.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
 // Gate usia 21+
 (function ageGate() {
   if (getConfig().ageOk) return;
